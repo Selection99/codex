@@ -13,6 +13,7 @@ use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::permissions::ReadDenyMatcher;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
@@ -78,6 +79,36 @@ fn with_managed_mitm_ca_readable_roots(
         &file_system_sandbox_policy,
         network_sandbox_policy,
     )
+}
+
+pub fn prepare_managed_network_child_env(
+    network: Option<&NetworkProxy>,
+    env: &mut HashMap<String, String>,
+    command_cwd: &Path,
+    permission_profile: &PermissionProfile,
+) -> Vec<AbsolutePathBuf> {
+    network.map_or_else(Vec::new, |network| {
+        let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
+        let read_deny_matcher = ReadDenyMatcher::new(&file_system_sandbox_policy, command_cwd);
+        network.prepare_child_env(env, command_cwd, |path| {
+            can_read_path_with_policy(
+                &file_system_sandbox_policy,
+                read_deny_matcher.as_ref(),
+                path,
+                command_cwd,
+            )
+        })
+    })
+}
+
+fn can_read_path_with_policy(
+    file_system_sandbox_policy: &FileSystemSandboxPolicy,
+    read_deny_matcher: Option<&ReadDenyMatcher>,
+    path: &Path,
+    cwd: &Path,
+) -> bool {
+    file_system_sandbox_policy.can_read_path_with_cwd(path, cwd)
+        && !read_deny_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
 }
 
 pub fn with_managed_mitm_ca_readable_root(
@@ -218,13 +249,12 @@ impl SandboxManager {
         let additional_permissions = command.additional_permissions.take();
         let mut effective_permission_profile =
             effective_permission_profile(permissions, additional_permissions.as_ref());
-        let managed_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
-            let file_system_sandbox_policy =
-                effective_permission_profile.file_system_sandbox_policy();
-            network.prepare_child_env(&mut command.env, command.cwd.as_path(), |path| {
-                file_system_sandbox_policy.can_read_path_with_cwd(path, command.cwd.as_path())
-            })
-        });
+        let managed_mitm_ca_trust_bundle_paths = prepare_managed_network_child_env(
+            network,
+            &mut command.env,
+            command.cwd.as_path(),
+            &effective_permission_profile,
+        );
         effective_permission_profile = with_managed_mitm_ca_readable_roots(
             effective_permission_profile,
             &managed_mitm_ca_trust_bundle_paths,

@@ -600,42 +600,27 @@ fn prepare_mitm_ca_trust_bundle_env<F>(
 where
     F: Fn(&Path) -> bool,
 {
+    let ssl_cert_dir_contents =
+        read_child_ca_dir_contents(mitm_ca_trust_bundle, env, cwd, &can_read_path);
     for key in crate::certs::CUSTOM_CA_ENV_KEYS {
         let Some(value) = env.get(key).filter(|value| !value.is_empty()) else {
             continue;
         };
-        let value_path = Path::new(value);
-        let custom_ca_bundle_path = if value_path == mitm_ca_trust_bundle.path {
-            let Some(startup_value) = mitm_ca_trust_bundle.startup_env_values.get(key) else {
-                continue;
-            };
-            resolve_ca_bundle_path(startup_value, &mitm_ca_trust_bundle.startup_cwd)
-        } else if crate::certs::is_generated_trust_bundle_path(value_path, mitm_ca_trust_bundle) {
-            continue;
-        } else {
-            resolve_ca_bundle_path(value, cwd)
-        };
-        if !can_read_path(&custom_ca_bundle_path) {
-            continue;
+        let mut custom_ca_bundle =
+            read_child_ca_bundle_contents(mitm_ca_trust_bundle, key, value, cwd, &can_read_path)
+                .unwrap_or_default();
+        if key == "SSL_CERT_FILE"
+            && let Some(ssl_cert_dir_contents) = ssl_cert_dir_contents.as_deref()
+        {
+            crate::certs::append_pem_contents(&mut custom_ca_bundle, ssl_cert_dir_contents);
         }
-        let custom_ca_bundle_path = match custom_ca_bundle_path.canonicalize() {
-            Ok(path) => path,
-            Err(err) => {
-                warn!(
-                    ca_env_key = key,
-                    ca_bundle_path = %custom_ca_bundle_path.display(),
-                    "failed to resolve child MITM CA bundle; leaving current value unchanged: {err}"
-                );
-                continue;
-            }
-        };
-        if !can_read_path(&custom_ca_bundle_path) {
+        if custom_ca_bundle.is_empty() {
             continue;
         }
 
         match crate::certs::materialize_ca_trust_bundle_with_custom_ca(
             mitm_ca_trust_bundle,
-            &custom_ca_bundle_path,
+            &custom_ca_bundle,
         ) {
             Ok(path) => {
                 env.insert(key.to_string(), path.to_string_lossy().into_owned());
@@ -643,7 +628,6 @@ where
             Err(err) => {
                 warn!(
                     ca_env_key = key,
-                    ca_bundle_path = %custom_ca_bundle_path.display(),
                     "failed to materialize child MITM CA bundle; leaving current value unchanged: {err}"
                 );
             }
@@ -659,6 +643,114 @@ fn resolve_ca_bundle_path(path: &str, cwd: &Path) -> std::path::PathBuf {
         path.to_path_buf()
     } else {
         cwd.join(path)
+    }
+}
+
+fn read_child_ca_bundle_contents<F>(
+    mitm_ca_trust_bundle: &crate::certs::ManagedMitmCaTrustBundle,
+    key: &'static str,
+    value: &str,
+    cwd: &Path,
+    can_read_path: &F,
+) -> Option<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let value_path = Path::new(value);
+    let custom_ca_bundle_path = if value_path == mitm_ca_trust_bundle.path {
+        let startup_value = mitm_ca_trust_bundle.startup_env_values.get(key)?;
+        resolve_ca_bundle_path(startup_value, &mitm_ca_trust_bundle.startup_cwd)
+    } else if crate::certs::is_generated_trust_bundle_path(value_path, mitm_ca_trust_bundle) {
+        return None;
+    } else {
+        resolve_ca_bundle_path(value, cwd)
+    };
+    read_readable_child_ca_bundle_contents(key, &custom_ca_bundle_path, can_read_path)
+}
+
+fn read_child_ca_dir_contents<F>(
+    mitm_ca_trust_bundle: &crate::certs::ManagedMitmCaTrustBundle,
+    env: &HashMap<String, String>,
+    cwd: &Path,
+    can_read_path: &F,
+) -> Option<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    let value = env
+        .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
+        .filter(|value| !value.is_empty())?;
+    let ca_dir_cwd = if mitm_ca_trust_bundle
+        .startup_env_values
+        .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
+        == Some(value)
+    {
+        &mitm_ca_trust_bundle.startup_cwd
+    } else {
+        cwd
+    };
+    let mut trust_bundle = String::new();
+    for ca_dir_path in std::env::split_paths(value).map(|path| {
+        if path.is_absolute() {
+            path
+        } else {
+            ca_dir_cwd.join(path)
+        }
+    }) {
+        if !can_read_path(&ca_dir_path) {
+            continue;
+        }
+        let ca_dir_path = match ca_dir_path.canonicalize() {
+            Ok(path) => path,
+            Err(err) => {
+                warn!(
+                    ca_bundle_path = %ca_dir_path.display(),
+                    "failed to resolve child MITM CA directory; leaving current value unchanged: {err}"
+                );
+                continue;
+            }
+        };
+        if !can_read_path(&ca_dir_path) {
+            continue;
+        }
+        match crate::certs::read_custom_ca_dir(&ca_dir_path, can_read_path) {
+            Ok(contents) if !contents.is_empty() => {
+                crate::certs::append_pem_contents(&mut trust_bundle, &contents);
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    ca_bundle_path = %ca_dir_path.display(),
+                    "failed to read child MITM CA directory; leaving current value unchanged: {err}"
+                );
+            }
+        }
+    }
+    if trust_bundle.is_empty() {
+        None
+    } else {
+        Some(trust_bundle)
+    }
+}
+
+fn read_readable_child_ca_bundle_contents<F>(
+    key: &'static str,
+    custom_ca_bundle_path: &Path,
+    can_read_path: &F,
+) -> Option<String>
+where
+    F: Fn(&Path) -> bool,
+{
+    match crate::certs::read_custom_ca_bundle(custom_ca_bundle_path, can_read_path) {
+        Ok(contents) => Some(contents),
+        Err(err) => {
+            warn!(
+                ca_env_key = key,
+                ca_bundle_path = %custom_ca_bundle_path.display(),
+                "failed to read child MITM CA bundle; leaving current value unchanged: {err}"
+            );
+            None
+        }
     }
 }
 
@@ -1299,6 +1391,48 @@ mod tests {
         assert_eq!(
             fs::read_to_string(command_ca_trust_bundle_path).unwrap(),
             "command ca\nmanaged ca\n"
+        );
+    }
+
+    #[test]
+    fn prepare_mitm_ca_trust_bundle_env_materializes_readable_ssl_cert_dir() {
+        let dir = tempdir().unwrap();
+        let ssl_cert_dir_paths = [dir.path().join("certs-a"), dir.path().join("certs-b")];
+        for (path, contents) in ssl_cert_dir_paths.iter().zip(["dir ca a\n", "dir ca b\n"]) {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("12345678.0"), contents).unwrap();
+        }
+        let mitm_ca_trust_bundle_path = dir.path().join("ca-bundle.pem");
+        fs::write(&mitm_ca_trust_bundle_path, "managed ca\n").unwrap();
+        let ssl_cert_dir = std::env::join_paths(["certs-a", "certs-b"]).unwrap();
+        let mut env = HashMap::from([
+            (
+                "SSL_CERT_FILE".to_string(),
+                mitm_ca_trust_bundle_path.display().to_string(),
+            ),
+            (
+                crate::certs::SSL_CERT_DIR_ENV_KEY.to_string(),
+                ssl_cert_dir.to_string_lossy().into_owned(),
+            ),
+        ]);
+        let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: mitm_ca_trust_bundle_path,
+            startup_env_values: HashMap::from([(
+                crate::certs::SSL_CERT_DIR_ENV_KEY,
+                ssl_cert_dir.to_string_lossy().into_owned(),
+            )]),
+            startup_cwd: dir.path().to_path_buf(),
+        };
+
+        prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |_| true);
+
+        let ssl_cert_file_path = Path::new(
+            env.get("SSL_CERT_FILE")
+                .expect("SSL_CERT_FILE should be set"),
+        );
+        assert_eq!(
+            fs::read_to_string(ssl_cert_file_path).unwrap(),
+            "dir ca a\ndir ca b\nmanaged ca\n"
         );
     }
 

@@ -3,6 +3,7 @@ use super::SandboxManager;
 use super::SandboxTransformRequest;
 use super::SandboxType;
 use super::SandboxablePreference;
+use super::can_read_path_with_policy;
 use super::get_platform_sandbox;
 use super::with_managed_mitm_ca_readable_roots;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -16,6 +17,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::permissions::ReadDenyMatcher;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use dunce::canonicalize;
 use pretty_assertions::assert_eq;
@@ -283,6 +285,36 @@ fn managed_mitm_ca_bundle_becomes_readable_for_restricted_sandbox() {
             },
         ])
     );
+}
+
+#[test]
+fn managed_mitm_ca_materialization_rejects_glob_denied_paths() {
+    let cwd = TempDir::new().expect("create cwd");
+    let cwd =
+        AbsolutePathBuf::from_absolute_path(canonicalize(cwd.path()).expect("canonicalize cwd"))
+            .expect("absolute cwd");
+    let ca_bundle_path = cwd.join("blocked.pem");
+    let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path: cwd.clone() },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::GlobPattern {
+                pattern: format!("{}/blocked.pem", cwd.as_path().display()),
+            },
+            access: FileSystemAccessMode::Deny,
+        },
+    ]);
+    let read_deny_matcher =
+        ReadDenyMatcher::new(&file_system_sandbox_policy, cwd.as_path()).expect("deny matcher");
+
+    assert!(!can_read_path_with_policy(
+        &file_system_sandbox_policy,
+        Some(&read_deny_matcher),
+        ca_bundle_path.as_path(),
+        cwd.as_path(),
+    ));
 }
 
 #[cfg(target_os = "linux")]
