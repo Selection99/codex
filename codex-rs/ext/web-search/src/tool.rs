@@ -70,6 +70,10 @@ impl ToolExecutor<ToolCall> for WebSearchTool {
         ToolExposure::DirectModelOnly
     }
 
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
     async fn handle(&self, call: ToolCall) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let commands = parse_commands(&call)?;
         let command_action = command_action(&commands);
@@ -90,7 +94,7 @@ impl ToolExecutor<ToolCall> for WebSearchTool {
         );
         let request = SearchRequest {
             id: self.session_id.clone(),
-            model: None,
+            model: call.model.clone(),
             reasoning: None,
             input: recent_input(call.conversation_history.items()),
             commands: Some(commands),

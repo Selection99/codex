@@ -7,6 +7,7 @@ use codex_tools::ExtensionTurnItem;
 use codex_tools::ImageGenerationCompletionFuture;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolName;
+use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
 use codex_tools::TurnItemEmissionFuture;
 use codex_tools::TurnItemEmitter;
@@ -47,6 +48,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         self.0.supports_parallel_tool_calls()
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        self.0.search_info()
     }
 
     async fn handle(
@@ -147,6 +152,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         turn_id: invocation.turn.sub_id.clone(),
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
+        model: invocation.turn.model_info.slug.clone(),
         truncation_policy: invocation.turn.truncation_policy,
         conversation_history,
         turn_item_emitter: Arc::new(CoreTurnItemEmitter {
@@ -307,6 +313,7 @@ mod tests {
         let weak_session = Arc::downgrade(&session);
         let weak_turn = Arc::downgrade(&turn);
         let turn_id = turn.sub_id.clone();
+        let model = turn.model_info.slug.clone();
         let truncation_policy = turn.truncation_policy;
         let history_item = ResponseItem::Message {
             id: None,
@@ -350,6 +357,7 @@ mod tests {
             captured_call.tool_name,
             codex_tools::ToolName::plain("extension_echo")
         );
+        assert_eq!(captured_call.model, model);
         assert_eq!(captured_call.truncation_policy, truncation_policy);
         assert_eq!(
             captured_call.conversation_history.items(),
