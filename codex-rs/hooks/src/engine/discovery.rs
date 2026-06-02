@@ -513,6 +513,7 @@ fn append_matcher_groups(
                         handler_type: HookHandlerType::Command,
                         matcher: matcher.map(ToOwned::to_owned),
                         command: Some(command.clone()),
+                        prompt: None,
                         timeout_sec,
                         status_message: status_message.clone(),
                         source_path: source.path.clone(),
@@ -595,6 +596,7 @@ fn append_matcher_groups(
                         handler_type: HookHandlerType::Prompt,
                         matcher: matcher.map(ToOwned::to_owned),
                         command: None,
+                        prompt: Some(prompt.clone()),
                         timeout_sec,
                         status_message: status_message.clone(),
                         source_path: source.path.clone(),
@@ -1070,6 +1072,10 @@ mod tests {
         assert_eq!(hook_entries.len(), 1);
         assert_eq!(hook_entries[0].handler_type, HookHandlerType::Prompt);
         assert_eq!(hook_entries[0].command, None);
+        assert_eq!(
+            hook_entries[0].prompt.as_deref(),
+            Some("Check this hook input: $ARGUMENTS")
+        );
         assert_eq!(hook_entries[0].timeout_sec, 30);
         assert_eq!(
             handlers[0].kind,

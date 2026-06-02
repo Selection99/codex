@@ -70,6 +70,7 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
             handler_type: hook.handler_type.into(),
             matcher: hook.matcher.clone(),
             command: hook.command.clone(),
+            prompt: hook.prompt.clone(),
             timeout_sec: hook.timeout_sec,
             status_message: hook.status_message.clone(),
             source_path: hook.source_path.clone(),

@@ -6444,6 +6444,12 @@
             "null"
           ]
         },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "$ref": "#/definitions/HookSource"
         },

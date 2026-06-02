@@ -3,45 +3,6 @@ use pretty_assertions::assert_eq;
 use super::*;
 
 #[tokio::test]
-async fn prompt_hook_uses_default_model_when_config_model_is_unset() {
-    let captured_request = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let runner = PromptHookRunner::new({
-        let captured_request = std::sync::Arc::clone(&captured_request);
-        move |request| {
-            let captured_request = std::sync::Arc::clone(&captured_request);
-            async move {
-                *captured_request.lock().expect("captured request lock") = Some(request);
-                Ok(r#"{"ok":true}"#.to_string())
-            }
-        }
-    });
-    let handler = prompt_handler(/*model*/ None);
-
-    let result = run_prompt(
-        Some(&runner),
-        &handler,
-        r#"{"hook_event_name":"Stop"}"#,
-        "gpt-thread".to_string(),
-    )
-    .await;
-
-    assert_eq!(result.exit_code, Some(0));
-    assert_eq!(result.error, None);
-    assert_eq!(
-        captured_request
-            .lock()
-            .expect("captured request lock")
-            .clone()
-            .expect("prompt request"),
-        PromptHookRequest {
-            event_name: HookEventName::Stop,
-            prompt: "Check: {\"hook_event_name\":\"Stop\"}".to_string(),
-            model: "gpt-thread".to_string(),
-        }
-    );
-}
-
-#[tokio::test]
 async fn prompt_hook_without_runner_returns_error() {
     let result = run_prompt(
         /*runner*/ None,

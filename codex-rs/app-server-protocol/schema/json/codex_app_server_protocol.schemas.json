@@ -9964,6 +9964,12 @@
               "null"
             ]
           },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "source": {
             "$ref": "#/definitions/v2/HookSource"
           },
