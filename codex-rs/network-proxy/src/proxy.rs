@@ -1331,6 +1331,39 @@ mod tests {
         assert!(bundle_paths.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn prepare_mitm_ca_trust_bundle_env_preserves_symlinked_unreadable_override() {
+        let dir = tempdir().unwrap();
+        let command_ca_bundle_path = dir.path().join("command-ca.pem");
+        fs::write(&command_ca_bundle_path, "command ca\n").unwrap();
+        let symlinked_ca_bundle_path = dir.path().join("symlinked-command-ca.pem");
+        std::os::unix::fs::symlink(&command_ca_bundle_path, &symlinked_ca_bundle_path).unwrap();
+        let canonical_command_ca_bundle_path = command_ca_bundle_path.canonicalize().unwrap();
+        let mut env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            symlinked_ca_bundle_path.display().to_string(),
+        )]);
+        let mitm_ca_trust_bundle_path = dir.path().join("ca-bundle.pem");
+        fs::write(&mitm_ca_trust_bundle_path, "managed ca\n").unwrap();
+        let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: mitm_ca_trust_bundle_path,
+            startup_env_values: HashMap::new(),
+            startup_cwd: dir.path().to_path_buf(),
+        };
+
+        let bundle_paths =
+            prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |path| {
+                path != canonical_command_ca_bundle_path
+            });
+
+        assert_eq!(
+            env.get("REQUESTS_CA_BUNDLE"),
+            Some(&symlinked_ca_bundle_path.display().to_string())
+        );
+        assert!(bundle_paths.is_empty());
+    }
+
     #[test]
     fn apply_proxy_env_overrides_uses_http_for_all_proxy_without_socks() {
         let mut env = HashMap::new();
