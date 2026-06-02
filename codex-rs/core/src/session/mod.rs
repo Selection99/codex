@@ -1505,7 +1505,7 @@ impl Session {
         let prompt_hook_runner = crate::hook_prompt::build_prompt_hook_runner(
             self.services.model_client.clone(),
             Arc::clone(&self.services.models_manager),
-            Arc::clone(&config),
+            config.as_ref(),
             self.services.session_telemetry.clone(),
             service_tier,
         );

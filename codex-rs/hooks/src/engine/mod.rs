@@ -124,6 +124,8 @@ pub struct HookListEntry {
     pub matcher: Option<String>,
     pub command: Option<String>,
     pub prompt: Option<String>,
+    pub model: Option<String>,
+    pub continue_on_block: Option<bool>,
     pub timeout_sec: u64,
     pub status_message: Option<String>,
     pub source_path: AbsolutePathBuf,
@@ -216,14 +218,8 @@ impl ClaudeHooksEngine {
         turn_id: Option<String>,
     ) -> SessionStartOutcome {
         let session_id = request.session_id;
-        let mut outcome = crate::events::session_start::run(
-            &self.handlers,
-            &self.shell,
-            self.prompt_hook_runner.as_ref(),
-            request,
-            turn_id,
-        )
-        .await;
+        let mut outcome =
+            crate::events::session_start::run(&self.handlers, &self.shell, request, turn_id).await;
         outcome.additional_contexts = self
             .maybe_spill_texts(session_id, outcome.additional_contexts)
             .await;
@@ -284,13 +280,7 @@ impl ClaudeHooksEngine {
     }
 
     pub(crate) async fn run_pre_compact(&self, request: PreCompactRequest) -> PreCompactOutcome {
-        crate::events::compact::run_pre(
-            &self.handlers,
-            &self.shell,
-            self.prompt_hook_runner.as_ref(),
-            request,
-        )
-        .await
+        crate::events::compact::run_pre(&self.handlers, &self.shell, request).await
     }
 
     pub(crate) fn preview_post_compact(&self, request: &PostCompactRequest) -> Vec<HookRunSummary> {
@@ -301,13 +291,7 @@ impl ClaudeHooksEngine {
         &self,
         request: PostCompactRequest,
     ) -> StatelessHookOutcome {
-        crate::events::compact::run_post(
-            &self.handlers,
-            &self.shell,
-            self.prompt_hook_runner.as_ref(),
-            request,
-        )
-        .await
+        crate::events::compact::run_post(&self.handlers, &self.shell, request).await
     }
 
     pub(crate) fn preview_user_prompt_submit(

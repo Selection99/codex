@@ -495,8 +495,7 @@ fn append_matcher_groups(
                         r#async,
                         status_message: status_message.clone(),
                     };
-                    let current_hash =
-                        command_hook_hash(event_name, matcher, &group, normalized_handler);
+                    let current_hash = hook_hash(event_name, matcher, &group, normalized_handler);
                     let command = source.env.iter().fold(command, |command, (key, value)| {
                         command.replace(&format!("${{{key}}}"), value)
                     });
@@ -508,12 +507,14 @@ fn append_matcher_groups(
                     let trust_status =
                         hook_trust_status(source.is_managed, &current_hash, trusted_hash);
                     hook_entries.push(HookListEntry {
-                        key: key.clone(),
+                        key,
                         event_name,
                         handler_type: HookHandlerType::Command,
                         matcher: matcher.map(ToOwned::to_owned),
                         command: Some(command.clone()),
                         prompt: None,
+                        model: None,
+                        continue_on_block: None,
                         timeout_sec,
                         status_message: status_message.clone(),
                         source_path: source.path.clone(),
@@ -581,8 +582,7 @@ fn append_matcher_groups(
                         status_message: status_message.clone(),
                         continue_on_block,
                     };
-                    let current_hash =
-                        command_hook_hash(event_name, matcher, &group, normalized_handler);
+                    let current_hash = hook_hash(event_name, matcher, &group, normalized_handler);
                     let key =
                         crate::hook_key(&source.key_source, event_name, group_index, handler_index);
                     let state = source.hook_states.get(&key);
@@ -591,12 +591,14 @@ fn append_matcher_groups(
                     let trust_status =
                         hook_trust_status(source.is_managed, &current_hash, trusted_hash);
                     hook_entries.push(HookListEntry {
-                        key: key.clone(),
+                        key,
                         event_name,
                         handler_type: HookHandlerType::Prompt,
                         matcher: matcher.map(ToOwned::to_owned),
                         command: None,
                         prompt: Some(prompt.clone()),
+                        model: model.clone(),
+                        continue_on_block: Some(continue_on_block),
                         timeout_sec,
                         status_message: status_message.clone(),
                         source_path: source.path.clone(),
@@ -651,7 +653,7 @@ struct NormalizedHookIdentity {
     group: MatcherGroup,
 }
 
-fn command_hook_hash(
+fn hook_hash(
     event_name: HookEventName,
     matcher: Option<&str>,
     group: &MatcherGroup,

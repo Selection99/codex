@@ -70,8 +70,10 @@ fn prompt_hook_hash(
     event_name: &'static str,
     matcher: Option<&str>,
     prompt: &str,
+    model: Option<&str>,
     timeout_sec: u64,
     status_message: Option<&str>,
+    continue_on_block: bool,
 ) -> String {
     let identity = NormalizedHookIdentity {
         event_name,
@@ -79,10 +81,10 @@ fn prompt_hook_hash(
             matcher: matcher.map(ToOwned::to_owned),
             hooks: vec![codex_config::HookHandlerConfig::Prompt {
                 prompt: prompt.to_string(),
-                model: None,
+                model: model.map(ToOwned::to_owned),
                 timeout_sec: Some(timeout_sec),
                 status_message: status_message.map(ToOwned::to_owned),
-                continue_on_block: false,
+                continue_on_block,
             }],
         },
     };
@@ -189,6 +191,8 @@ async fn hooks_list_shows_discovered_hook() -> Result<()> {
                 matcher: Some("Bash".to_string()),
                 command: Some("python3 /tmp/listed-hook.py".to_string()),
                 prompt: None,
+                model: None,
+                continue_on_block: None,
                 timeout_sec: 5,
                 status_message: Some("running listed hook".to_string()),
                 source_path: config_path,
@@ -240,8 +244,10 @@ async fn hooks_list_shows_discovered_plugin_hooks() -> Result<()> {
           {
             "type": "prompt",
             "prompt": "Reject prompts that mention secrets: $ARGUMENTS",
+            "model": "gpt-5-mini",
             "timeout": 30,
-            "statusMessage": "checking prompt"
+            "statusMessage": "checking prompt",
+            "continueOnBlock": true
           }
         ]
       }
@@ -281,6 +287,8 @@ async fn hooks_list_shows_discovered_plugin_hooks() -> Result<()> {
                     matcher: Some("Bash".to_string()),
                     command: Some("echo plugin hook".to_string()),
                     prompt: None,
+                    model: None,
+                    continue_on_block: None,
                     timeout_sec: 7,
                     status_message: Some("running plugin hook".to_string()),
                     source_path: plugin_hooks_path.clone(),
@@ -305,6 +313,8 @@ async fn hooks_list_shows_discovered_plugin_hooks() -> Result<()> {
                     matcher: None,
                     command: None,
                     prompt: Some("Reject prompts that mention secrets: $ARGUMENTS".to_string()),
+                    model: Some("gpt-5-mini".to_string()),
+                    continue_on_block: Some(true),
                     timeout_sec: 30,
                     status_message: Some("checking prompt".to_string()),
                     source_path: plugin_hooks_path,
@@ -317,8 +327,10 @@ async fn hooks_list_shows_discovered_plugin_hooks() -> Result<()> {
                         "user_prompt_submit",
                         /*matcher*/ None,
                         "Reject prompts that mention secrets: $ARGUMENTS",
+                        Some("gpt-5-mini"),
                         /*timeout_sec*/ 30,
                         Some("checking prompt"),
+                        /*continue_on_block*/ true,
                     ),
                     trust_status: HookTrustStatus::Untrusted,
                 },
@@ -432,6 +444,8 @@ timeout = 5
                     matcher: Some("Bash".to_string()),
                     command: Some("echo project hook".to_string()),
                     prompt: None,
+                    model: None,
+                    continue_on_block: None,
                     timeout_sec: 5,
                     status_message: None,
                     source_path: project_config_path,

@@ -37,14 +37,15 @@ Use ok:false only when the hook criteria fail. Do not answer the user's task. Do
 pub(crate) fn build_prompt_hook_runner(
     model_client: ModelClient,
     models_manager: SharedModelsManager,
-    config: Arc<Config>,
+    config: &Config,
     session_telemetry: SessionTelemetry,
     service_tier: Option<String>,
 ) -> PromptHookRunner {
+    let models_manager_config = config.to_models_manager_config();
     PromptHookRunner::new(move |request| {
         let model_client = model_client.clone();
         let models_manager = Arc::clone(&models_manager);
-        let models_manager_config = config.to_models_manager_config();
+        let models_manager_config = models_manager_config.clone();
         let session_telemetry = session_telemetry.clone();
         let service_tier = service_tier.clone();
         async move {
@@ -97,7 +98,7 @@ async fn run_prompt_hook(
     };
 
     let disabled_trace = InferenceTraceContext::disabled();
-    let mut client_session = model_client.new_session();
+    let mut client_session = model_client.new_isolated_session();
     let mut stream = client_session
         .stream(
             &prompt,

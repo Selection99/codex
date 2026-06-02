@@ -15,7 +15,6 @@ use crate::engine::ConfiguredHandler;
 use crate::engine::command_runner::CommandRunResult;
 use crate::engine::dispatcher;
 use crate::engine::output_parser;
-use crate::engine::prompt_runner::PromptHookRunner;
 use crate::schema::NullableString;
 use crate::schema::SessionStartCommandInput;
 use crate::schema::SubagentStartCommandInput;
@@ -109,7 +108,6 @@ pub(crate) fn preview(
 pub(crate) async fn run(
     handlers: &[ConfiguredHandler],
     shell: &CommandShell,
-    prompt_runner: Option<&PromptHookRunner>,
     request: SessionStartRequest,
     turn_id: Option<String>,
 ) -> SessionStartOutcome {
@@ -187,7 +185,7 @@ pub(crate) async fn run(
         input_json,
         dispatcher::HandlerExecutionContext {
             shell,
-            prompt_runner,
+            prompt_runner: None,
             cwd: request.cwd.as_path(),
             default_model: request.model.clone(),
             turn_id,

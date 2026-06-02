@@ -6410,6 +6410,12 @@
             "null"
           ]
         },
+        "continueOnBlock": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "currentHash": {
           "type": "string"
         },
@@ -6433,6 +6439,12 @@
           "type": "string"
         },
         "matcher": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
           "type": [
             "string",
             "null"

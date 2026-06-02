@@ -512,6 +512,8 @@ pub struct HookMetadata {
     pub matcher: Option<String>,
     pub command: Option<String>,
     pub prompt: Option<String>,
+    pub model: Option<String>,
+    pub continue_on_block: Option<bool>,
     pub timeout_sec: u64,
     pub status_message: Option<String>,
     pub source_path: AbsolutePathBuf,

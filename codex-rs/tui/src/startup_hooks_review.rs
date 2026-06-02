@@ -292,6 +292,8 @@ mod tests {
             matcher: Some("Bash".to_string()),
             command: Some("/tmp/hook.sh".to_string()),
             prompt: None,
+            model: None,
+            continue_on_block: None,
             timeout_sec: 30,
             status_message: None,
             source_path: test_path_buf("/tmp/hooks.json").abs(),

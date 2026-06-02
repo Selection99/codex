@@ -36,6 +36,14 @@ fn render_prompt_appends_arguments_without_placeholder() {
 }
 
 #[test]
+fn render_prompt_caps_model_input() {
+    let rendered = render_prompt("$ARGUMENTS", &"word ".repeat(20_000));
+
+    assert!(codex_utils_output_truncation::approx_token_count(&rendered) <= 10_000);
+    assert!(rendered.contains("tokens truncated"));
+}
+
+#[test]
 fn stop_ok_false_becomes_block_decision() {
     assert_json_eq(
         prompt_output_to_command_stdout(
@@ -94,24 +102,6 @@ fn post_tool_use_ok_false_honors_continue_on_block() {
             "stopReason": "stop here",
         }),
     );
-}
-
-#[test]
-fn every_event_declares_prompt_behavior() {
-    for event_name in [
-        HookEventName::PreToolUse,
-        HookEventName::PermissionRequest,
-        HookEventName::PostToolUse,
-        HookEventName::PreCompact,
-        HookEventName::PostCompact,
-        HookEventName::SessionStart,
-        HookEventName::UserPromptSubmit,
-        HookEventName::SubagentStart,
-        HookEventName::SubagentStop,
-        HookEventName::Stop,
-    ] {
-        let _ = prompt_hook_behavior(event_name);
-    }
 }
 
 fn assert_json_eq(actual: String, expected: serde_json::Value) {

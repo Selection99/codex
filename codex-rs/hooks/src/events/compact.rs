@@ -15,7 +15,6 @@ use crate::engine::ConfiguredHandler;
 use crate::engine::command_runner::CommandRunResult;
 use crate::engine::dispatcher;
 use crate::engine::output_parser;
-use crate::engine::prompt_runner::PromptHookRunner;
 use crate::schema::PostCompactCommandInput;
 use crate::schema::PreCompactCommandInput;
 use crate::schema::SubagentCommandInputFields;
@@ -73,7 +72,6 @@ pub(crate) fn preview_pre(
 pub(crate) async fn run_pre(
     handlers: &[ConfiguredHandler],
     shell: &CommandShell,
-    prompt_runner: Option<&PromptHookRunner>,
     request: PreCompactRequest,
 ) -> PreCompactOutcome {
     let matched = dispatcher::select_handlers(
@@ -109,7 +107,7 @@ pub(crate) async fn run_pre(
         input_json,
         dispatcher::HandlerExecutionContext {
             shell,
-            prompt_runner,
+            prompt_runner: None,
             cwd: request.cwd.as_path(),
             default_model: request.model.clone(),
             turn_id: Some(request.turn_id.clone()),
@@ -160,7 +158,6 @@ pub(crate) fn preview_post(
 pub(crate) async fn run_post(
     handlers: &[ConfiguredHandler],
     shell: &CommandShell,
-    prompt_runner: Option<&PromptHookRunner>,
     request: PostCompactRequest,
 ) -> StatelessHookOutcome {
     let matched = dispatcher::select_handlers(
@@ -196,7 +193,7 @@ pub(crate) async fn run_post(
         input_json,
         dispatcher::HandlerExecutionContext {
             shell,
-            prompt_runner,
+            prompt_runner: None,
             cwd: request.cwd.as_path(),
             default_model: request.model.clone(),
             turn_id: Some(request.turn_id.clone()),

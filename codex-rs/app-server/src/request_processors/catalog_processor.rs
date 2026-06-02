@@ -71,6 +71,8 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
             matcher: hook.matcher.clone(),
             command: hook.command.clone(),
             prompt: hook.prompt.clone(),
+            model: hook.model.clone(),
+            continue_on_block: hook.continue_on_block,
             timeout_sec: hook.timeout_sec,
             status_message: hook.status_message.clone(),
             source_path: hook.source_path.clone(),

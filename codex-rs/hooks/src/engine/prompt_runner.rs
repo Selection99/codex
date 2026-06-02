@@ -4,6 +4,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_protocol::protocol::HookEventName;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::truncate_text;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::json;
@@ -15,10 +18,10 @@ use super::command_runner::CommandRunResult;
 use crate::schema::hook_event_wire_name;
 
 const PROMPT_ARGUMENTS_PLACEHOLDER: &str = "$ARGUMENTS";
+const PROMPT_HOOK_INPUT_TOKEN_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptHookRequest {
-    pub event_name: HookEventName,
     pub prompt: String,
     pub model: String,
 }
@@ -126,7 +129,6 @@ pub(crate) async fn run_prompt(
     };
 
     let request = PromptHookRequest {
-        event_name: handler.event_name,
         prompt: render_prompt(prompt, input_json),
         model: model.clone().unwrap_or(default_model),
     };
@@ -167,10 +169,23 @@ pub(crate) async fn run_prompt(
 }
 
 fn render_prompt(prompt: &str, input_json: &str) -> String {
-    if prompt.contains(PROMPT_ARGUMENTS_PLACEHOLDER) {
+    let rendered = if prompt.contains(PROMPT_ARGUMENTS_PLACEHOLDER) {
         prompt.replace(PROMPT_ARGUMENTS_PLACEHOLDER, input_json)
     } else {
         format!("{prompt}\n\n{input_json}")
+    };
+    let mut truncation_budget = PROMPT_HOOK_INPUT_TOKEN_LIMIT;
+    loop {
+        let candidate = truncate_text(&rendered, TruncationPolicy::Tokens(truncation_budget));
+        let candidate_tokens = approx_token_count(&candidate);
+        if candidate_tokens <= PROMPT_HOOK_INPUT_TOKEN_LIMIT {
+            return candidate;
+        }
+        truncation_budget = truncation_budget.saturating_sub(
+            candidate_tokens
+                .saturating_sub(PROMPT_HOOK_INPUT_TOKEN_LIMIT)
+                .max(1),
+        );
     }
 }
 
@@ -179,22 +194,22 @@ fn prompt_output_to_command_stdout(
     continue_on_block: bool,
     output: &str,
 ) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(output.trim())
-        .map_err(|err| format!("prompt hook returned invalid JSON output: {err}"))?;
-    if !value.is_object() {
-        return Err("prompt hook returned invalid JSON output: expected an object".to_string());
-    }
-    let output: PromptHookOutput = serde_json::from_value(value)
+    let output: PromptHookOutput = serde_json::from_str(output.trim())
         .map_err(|err| format!("prompt hook returned invalid JSON output: {err}"))?;
     if output.ok {
         return Ok("{}".to_string());
     }
 
-    let Some(reason) = output.reason.as_deref().and_then(trimmed_reason) else {
+    let Some(reason) = output
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+    else {
         return Err("prompt hook returned ok:false without a non-empty reason".to_string());
     };
 
-    prompt_block_output(event_name, continue_on_block, reason)
+    prompt_block_output(event_name, continue_on_block, reason.to_string())
 }
 
 fn prompt_block_output(
@@ -233,11 +248,6 @@ fn prompt_block_output(
         }
     };
     serde_json::to_string(&value).map_err(|err| err.to_string())
-}
-
-fn trimmed_reason(reason: &str) -> Option<String> {
-    let trimmed = reason.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn prompt_run_result(

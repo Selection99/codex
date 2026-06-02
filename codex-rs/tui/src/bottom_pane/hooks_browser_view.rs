@@ -493,6 +493,20 @@ impl HooksBrowserView {
             width,
             Some(MAX_HANDLER_DEFINITION_DETAIL_LINES),
         ));
+        if hook.handler_type == HookHandlerType::Prompt {
+            lines.push(detail_line(
+                "Model",
+                hook.model.as_deref().unwrap_or("default"),
+            ));
+            lines.push(detail_line(
+                "On block",
+                if hook.continue_on_block.unwrap_or(false) {
+                    "continue"
+                } else {
+                    "stop"
+                },
+            ));
+        }
         lines.push(detail_line("Timeout", &format!("{}s", hook.timeout_sec)));
         lines.push(detail_line("Trust", hook_trust_label(hook.trust_status)));
         lines
@@ -943,6 +957,8 @@ mod tests {
             matcher: Some("Bash".to_string()),
             command: Some(command.to_string()),
             prompt: None,
+            model: None,
+            continue_on_block: None,
             timeout_sec: 30,
             status_message: None,
             source_path: test_path_buf("/tmp/hooks.json").abs(),
@@ -1283,7 +1299,7 @@ mod tests {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let mut prompt_hook = hook(
             "path:prompt-hook",
-            HookEventName::PreToolUse,
+            HookEventName::PostToolUse,
             HookSource::User,
             /*plugin_id*/ None,
             /*command*/ "",
@@ -1294,12 +1310,18 @@ mod tests {
         prompt_hook.handler_type = HookHandlerType::Prompt;
         prompt_hook.command = None;
         prompt_hook.prompt = Some("Reject prompts that mention secrets: $ARGUMENTS".to_string());
+        prompt_hook.model = Some("gpt-5.1".to_string());
+        prompt_hook.continue_on_block = Some(true);
         let mut view = HooksBrowserView::new(
             vec![prompt_hook],
             Vec::new(),
             Vec::new(),
             AppEventSender::new(tx_raw),
         );
+        view.state.selected_idx = view
+            .event_rows()
+            .iter()
+            .position(|row| row.event_name == HookEventName::PostToolUse);
         view.handle_key_event(KeyEvent::from(KeyCode::Enter));
         assert_snapshot!(
             "hooks_browser_prompt_hook_definition",
