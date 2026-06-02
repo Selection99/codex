@@ -100,6 +100,25 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         })
     }
 
+    fn handle_any<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<AnyToolResult, FunctionCallError>> {
+        Box::pin(async move {
+            let call_id = invocation.call_id.clone();
+            let payload = invocation.payload.clone();
+            let output = self.handle(invocation.clone()).await?;
+            let post_tool_use_payload = self.post_tool_use_payload(&invocation, output.as_ref());
+            Ok(AnyToolResult {
+                call_id,
+                payload,
+                result: output,
+                post_tool_use_payload,
+                sandbox_outcome: None,
+            })
+        })
+    }
+
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         let ToolPayload::Function { arguments } = &invocation.payload else {
             return None;
@@ -162,9 +181,27 @@ pub(crate) struct AnyToolResult {
     pub(crate) payload: ToolPayload,
     pub(crate) result: Box<dyn ToolOutput>,
     pub(crate) post_tool_use_payload: Option<PostToolUsePayload>,
+    pub(crate) sandbox_outcome: Option<&'static str>,
 }
 
 impl AnyToolResult {
+    pub(crate) fn new(
+        tool: &dyn CoreToolRuntime,
+        invocation: ToolInvocation,
+        result: Box<dyn ToolOutput>,
+        sandbox_outcome: Option<&'static str>,
+    ) -> Self {
+        let post_tool_use_payload =
+            CoreToolRuntime::post_tool_use_payload(tool, &invocation, result.as_ref());
+        Self {
+            call_id: invocation.call_id,
+            payload: invocation.payload,
+            result,
+            post_tool_use_payload,
+            sandbox_outcome,
+        }
+    }
+
     pub(crate) fn into_response(self) -> ResponseInputItem {
         let Self {
             call_id,
@@ -454,6 +491,7 @@ impl ToolRegistry {
                     Duration::ZERO,
                     /*success*/ false,
                     &message,
+                    /*sandbox_outcome*/ None,
                     &base_tool_result_tags,
                     /*extra_trace_fields*/ &[],
                 );
@@ -485,6 +523,7 @@ impl ToolRegistry {
                 Duration::ZERO,
                 /*success*/ false,
                 &message,
+                /*sandbox_outcome*/ None,
                 &tool_result_tags,
                 &extra_trace_fields,
             );
@@ -560,9 +599,10 @@ impl ToolRegistry {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
                                 let success = result.result.success_for_logging();
+                                let sandbox_outcome = result.sandbox_outcome;
                                 let mut guard = response_cell.lock().await;
                                 *guard = Some(result);
-                                Ok((preview, success))
+                                Ok((preview, success, sandbox_outcome))
                             }
                             Err(err) => Err(err),
                         }
@@ -571,7 +611,7 @@ impl ToolRegistry {
             )
             .await;
         let success = match &result {
-            Ok((_, success)) => *success,
+            Ok((_, success, _sandbox_outcome)) => *success,
             Err(_) => false,
         };
         emit_metric_for_tool_read(&invocation, success).await;
@@ -707,17 +747,7 @@ async fn handle_any_tool(
     tool: &dyn CoreToolRuntime,
     invocation: ToolInvocation,
 ) -> Result<AnyToolResult, FunctionCallError> {
-    let call_id = invocation.call_id.clone();
-    let payload = invocation.payload.clone();
-    let output = tool.handle(invocation.clone()).await?;
-    let post_tool_use_payload =
-        CoreToolRuntime::post_tool_use_payload(tool, &invocation, output.as_ref());
-    Ok(AnyToolResult {
-        call_id,
-        payload,
-        result: output,
-        post_tool_use_payload,
-    })
+    tool.handle_any(invocation).await
 }
 
 fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {

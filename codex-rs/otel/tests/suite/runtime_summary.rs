@@ -43,6 +43,7 @@ fn runtime_metrics_summary_collects_tool_api_and_streaming_metrics() -> Result<(
         Duration::from_millis(250),
         /*success*/ true,
         "ok",
+        /*sandbox_outcome*/ None,
         &[],
         /*extra_trace_fields*/ &[],
     );

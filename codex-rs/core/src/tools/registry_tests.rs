@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use tracing_test::traced_test;
 
 struct TestHandler {
     tool_name: codex_tools::ToolName,
@@ -67,6 +68,48 @@ impl ToolExecutor<ToolInvocation> for LifecycleTestHandler {
 }
 
 impl CoreToolRuntime for LifecycleTestHandler {}
+
+struct SandboxOutcomeTestHandler {
+    tool_name: codex_tools::ToolName,
+    sandbox_outcome: &'static str,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for SandboxOutcomeTestHandler {
+    fn tool_name(&self) -> codex_tools::ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> codex_tools::ToolSpec {
+        test_spec(&self.tool_name)
+    }
+
+    async fn handle(
+        &self,
+        _invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        Ok(Box::new(
+            crate::tools::context::FunctionToolOutput::from_text("ok".to_string(), Some(true)),
+        ))
+    }
+}
+
+impl CoreToolRuntime for SandboxOutcomeTestHandler {
+    fn handle_any<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<AnyToolResult, FunctionCallError>> {
+        Box::pin(async move {
+            let output = self.handle(invocation.clone()).await?;
+            Ok(AnyToolResult::new(
+                self,
+                invocation,
+                output,
+                Some(self.sandbox_outcome),
+            ))
+        })
+    }
+}
 
 fn test_spec(tool_name: &codex_tools::ToolName) -> codex_tools::ToolSpec {
     codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
@@ -170,6 +213,45 @@ fn handler_looks_up_namespaced_aliases_explicitly() {
             .as_ref()
             .is_some_and(|handler| Arc::ptr_eq(handler, &namespaced_handler))
     );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn dispatch_tool_result_logs_sandbox_outcome() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let tool_name = codex_tools::ToolName::plain("sandbox_outcome_tool");
+    let registry = ToolRegistry::with_handler_for_test(Arc::new(SandboxOutcomeTestHandler {
+        tool_name: tool_name.clone(),
+        sandbox_outcome: "escalated",
+    }));
+
+    registry
+        .dispatch_any(test_invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "sandbox-outcome-call",
+            tool_name,
+        ))
+        .await?;
+
+    logs_assert(|lines: &[&str]| {
+        let line = lines
+            .iter()
+            .find(|line| {
+                line.contains("codex.tool_result") && line.contains("call_id=sandbox-outcome-call")
+            })
+            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+
+        if !line.contains("sandbox_outcome=\"escalated\"") {
+            return Err(format!(
+                "missing sandbox_outcome=\"escalated\" in line: {line}"
+            ));
+        }
+
+        Ok(())
+    });
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -329,6 +411,7 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
             ),
         }),
         post_tool_use_payload: None,
+        sandbox_outcome: None,
     };
 
     assert_eq!(
@@ -356,6 +439,7 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
             ),
         }),
         post_tool_use_payload: None,
+        sandbox_outcome: None,
     };
 
     assert_eq!(

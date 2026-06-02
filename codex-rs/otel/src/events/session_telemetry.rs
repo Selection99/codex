@@ -1007,19 +1007,21 @@ impl SessionTelemetry {
         extra_tags: &[(&str, &str)],
         extra_trace_fields: &[(&str, &str)],
         f: F,
-    ) -> Result<(String, bool), E>
+    ) -> Result<(String, bool, Option<&'static str>), E>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<(String, bool), E>>,
+        Fut: Future<Output = Result<(String, bool, Option<&'static str>), E>>,
         E: std::fmt::Display,
     {
         let start = Instant::now();
         let result = f().await;
         let duration = start.elapsed();
 
-        let (output, success) = match &result {
-            Ok((preview, success)) => (Cow::Borrowed(preview.as_str()), *success),
-            Err(error) => (Cow::Owned(error.to_string()), false),
+        let (output, success, sandbox_outcome) = match &result {
+            Ok((preview, success, sandbox_outcome)) => {
+                (Cow::Borrowed(preview.as_str()), *success, *sandbox_outcome)
+            }
+            Err(error) => (Cow::Owned(error.to_string()), false, None),
         };
 
         self.tool_result_with_tags(
@@ -1029,6 +1031,7 @@ impl SessionTelemetry {
             duration,
             success,
             output.as_ref(),
+            sandbox_outcome,
             extra_tags,
             extra_trace_fields,
         );
@@ -1043,6 +1046,7 @@ impl SessionTelemetry {
             tool_name = %tool_name,
             duration_ms = %Duration::ZERO.as_millis(),
             success = %false,
+            sandbox_outcome = Option::<&str>::None,
             output = %error,
             mcp_server = "",
             mcp_server_origin = "",
@@ -1053,6 +1057,7 @@ impl SessionTelemetry {
             tool_name = %tool_name,
             duration_ms = %Duration::ZERO.as_millis(),
             success = %false,
+            sandbox_outcome = Option::<&str>::None,
             output_length = error.len() as i64,
             output_line_count = error.lines().count() as i64,
             tool_origin = %"builtin",
@@ -1069,13 +1074,16 @@ impl SessionTelemetry {
         duration: Duration,
         success: bool,
         output: &str,
+        sandbox_outcome: Option<&str>,
         extra_tags: &[(&str, &str)],
         extra_trace_fields: &[(&str, &str)],
     ) {
         let success_str = if success { "true" } else { "false" };
-        let mut tags = Vec::with_capacity(2 + extra_tags.len());
+        let sandbox_outcome_tag = sandbox_outcome.unwrap_or("none");
+        let mut tags = Vec::with_capacity(3 + extra_tags.len());
         tags.push(("tool", tool_name));
         tags.push(("success", success_str));
+        tags.push(("sandbox_outcome", sandbox_outcome_tag));
         tags.extend_from_slice(extra_tags);
         self.counter(TOOL_CALL_COUNT_METRIC, /*inc*/ 1, &tags);
         self.record_duration(TOOL_CALL_DURATION_METRIC, duration, &tags);
@@ -1090,6 +1098,7 @@ impl SessionTelemetry {
             arguments = %arguments,
             duration_ms = %duration.as_millis(),
             success = %success_str,
+            sandbox_outcome = sandbox_outcome,
             output = %output,
             mcp_server = %mcp_server,
             mcp_server_origin = %mcp_server_origin,
@@ -1101,6 +1110,7 @@ impl SessionTelemetry {
             call_id = %call_id,
             duration_ms = %duration.as_millis(),
             success = %success_str,
+            sandbox_outcome = sandbox_outcome,
             arguments_length = arguments.len() as i64,
             output_length = output.len() as i64,
             output_line_count = output.lines().count() as i64,

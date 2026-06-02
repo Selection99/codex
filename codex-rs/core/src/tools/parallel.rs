@@ -218,6 +218,7 @@ impl ToolCallRuntime {
                 message: Self::abort_message(call, secs),
             }),
             post_tool_use_payload: None,
+            sandbox_outcome: None,
         }
     }
 

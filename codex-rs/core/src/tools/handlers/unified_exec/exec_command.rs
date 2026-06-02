@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
+
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::tools::context::ExecCommandToolOutput;
@@ -16,6 +18,7 @@ use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -52,6 +55,11 @@ pub struct ExecCommandHandler {
     options: ExecCommandHandlerOptions,
 }
 
+struct ExecCommandHandleResult {
+    output: ExecCommandToolOutput,
+    sandbox_outcome: Option<&'static str>,
+}
+
 impl Default for ExecCommandHandler {
     fn default() -> Self {
         Self {
@@ -69,33 +77,11 @@ impl ExecCommandHandler {
     pub(crate) fn new(options: ExecCommandHandlerOptions) -> Self {
         Self { options }
     }
-}
 
-#[async_trait::async_trait]
-impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
-    fn tool_name(&self) -> ToolName {
-        ToolName::plain("exec_command")
-    }
-
-    fn spec(&self) -> ToolSpec {
-        create_exec_command_tool_with_environment_id(
-            CommandToolOptions {
-                allow_login_shell: self.options.allow_login_shell,
-                exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
-            },
-            self.options.include_environment_id,
-            self.options.include_shell_parameter,
-        )
-    }
-
-    fn supports_parallel_tool_calls(&self) -> bool {
-        true
-    }
-
-    async fn handle(
+    async fn handle_exec_command(
         &self,
         invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+    ) -> Result<ExecCommandHandleResult, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -240,18 +226,21 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         .await?
         {
             manager.release_process_id(process_id).await;
-            return Ok(boxed_tool_output(ExecCommandToolOutput {
-                event_call_id: String::new(),
-                chunk_id: String::new(),
-                wall_time: std::time::Duration::ZERO,
-                raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.truncation_policy,
-                max_output_tokens,
-                process_id: None,
-                exit_code: None,
-                original_token_count: None,
-                hook_command: None,
-            }));
+            return Ok(ExecCommandHandleResult {
+                output: ExecCommandToolOutput {
+                    event_call_id: String::new(),
+                    chunk_id: String::new(),
+                    wall_time: std::time::Duration::ZERO,
+                    raw_output: output.into_text().into_bytes(),
+                    truncation_policy: turn.truncation_policy,
+                    max_output_tokens,
+                    process_id: None,
+                    exit_code: None,
+                    original_token_count: None,
+                    hook_command: None,
+                },
+                sandbox_outcome: None,
+            });
         }
 
         emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
@@ -281,24 +270,30 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             )
             .await
         {
-            Ok(response) => Ok(boxed_tool_output(response)),
+            Ok(response) => Ok(ExecCommandHandleResult {
+                output: response.output,
+                sandbox_outcome: response.sandbox_outcome,
+            }),
             Err(UnifiedExecError::SandboxDenied { output, .. }) => {
                 let output_text = output.aggregated_output.text;
                 let original_token_count = approx_token_count(&output_text);
-                Ok(boxed_tool_output(ExecCommandToolOutput {
-                    event_call_id: context.call_id.clone(),
-                    chunk_id: generate_chunk_id(),
-                    wall_time: output.duration,
-                    raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.truncation_policy,
-                    max_output_tokens,
-                    // Sandbox denial is terminal, so there is no live
-                    // process for write_stdin to resume.
-                    process_id: None,
-                    exit_code: Some(output.exit_code),
-                    original_token_count: Some(original_token_count),
-                    hook_command: Some(hook_command),
-                }))
+                Ok(ExecCommandHandleResult {
+                    output: ExecCommandToolOutput {
+                        event_call_id: context.call_id.clone(),
+                        chunk_id: generate_chunk_id(),
+                        wall_time: output.duration,
+                        raw_output: output_text.into_bytes(),
+                        truncation_policy: turn.truncation_policy,
+                        max_output_tokens,
+                        // Sandbox denial is terminal, so there is no live
+                        // process for write_stdin to resume.
+                        process_id: None,
+                        exit_code: Some(output.exit_code),
+                        original_token_count: Some(original_token_count),
+                        hook_command: Some(hook_command),
+                    },
+                    sandbox_outcome: Some("denied"),
+                })
             }
             Err(err) => Err(FunctionCallError::RespondToModel(format!(
                 "exec_command failed for `{command_for_display}`: {err:?}"
@@ -307,9 +302,56 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     }
 }
 
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("exec_command")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        create_exec_command_tool_with_environment_id(
+            CommandToolOptions {
+                allow_login_shell: self.options.allow_login_shell,
+                exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+            },
+            self.options.include_environment_id,
+            self.options.include_shell_parameter,
+        )
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        self.handle_exec_command(invocation)
+            .await
+            .map(|result| boxed_tool_output(result.output))
+    }
+}
+
 impl CoreToolRuntime for ExecCommandHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn handle_any<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<AnyToolResult, FunctionCallError>> {
+        Box::pin(async move {
+            let result = self.handle_exec_command(invocation.clone()).await?;
+            let output = boxed_tool_output(result.output);
+            Ok(AnyToolResult::new(
+                self,
+                invocation,
+                output,
+                result.sandbox_outcome,
+            ))
+        })
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {

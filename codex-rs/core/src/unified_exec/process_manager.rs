@@ -79,6 +79,11 @@ const LATE_NETWORK_DENIAL_GRACE_PERIOD: Duration = Duration::from_millis(100);
 /// must not be toggled.
 static FORCE_DETERMINISTIC_PROCESS_IDS: AtomicBool = AtomicBool::new(false);
 
+pub(crate) struct ExecCommandResponse {
+    pub(crate) output: ExecCommandToolOutput,
+    pub(crate) sandbox_outcome: Option<&'static str>,
+}
+
 pub(super) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     FORCE_DETERMINISTIC_PROCESS_IDS.store(enabled, Ordering::Relaxed);
 }
@@ -370,16 +375,18 @@ impl UnifiedExecProcessManager {
         &self,
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
-    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    ) -> Result<ExecCommandResponse, UnifiedExecError> {
         let cwd = request.cwd.clone();
         let process = self
             .open_session_with_sandbox(&request, cwd.clone(), context)
             .await;
 
-        let (process, mut deferred_network_approval) = match process {
-            Ok((process, deferred_network_approval)) => {
-                (Arc::new(process), deferred_network_approval)
-            }
+        let (process, mut deferred_network_approval, sandbox_outcome) = match process {
+            Ok((process, deferred_network_approval, sandbox_outcome)) => (
+                Arc::new(process),
+                deferred_network_approval,
+                sandbox_outcome,
+            ),
             Err(err) => {
                 self.release_process_id(request.process_id).await;
                 return Err(err);
@@ -589,7 +596,10 @@ impl UnifiedExecProcessManager {
             hook_command: Some(request.hook_command.clone()),
         };
 
-        Ok(response)
+        Ok(ExecCommandResponse {
+            output: response,
+            sandbox_outcome,
+        })
     }
 
     pub(crate) async fn write_stdin(
@@ -994,7 +1004,14 @@ impl UnifiedExecProcessManager {
         request: &ExecCommandRequest,
         cwd: AbsolutePathBuf,
         context: &UnifiedExecContext,
-    ) -> Result<(UnifiedExecProcess, Option<DeferredNetworkApproval>), UnifiedExecError> {
+    ) -> Result<
+        (
+            UnifiedExecProcess,
+            Option<DeferredNetworkApproval>,
+            Option<&'static str>,
+        ),
+        UnifiedExecError,
+    > {
         let local_policy_env = create_env(
             &context.turn.shell_environment_policy,
             /*thread_id*/ None,
@@ -1067,7 +1084,13 @@ impl UnifiedExecProcessManager {
                 context.turn.approval_policy.value(),
             )
             .await
-            .map(|result| (result.output, result.deferred_network_approval))
+            .map(|result| {
+                (
+                    result.output,
+                    result.deferred_network_approval,
+                    result.sandbox_outcome,
+                )
+            })
             .map_err(|err| match err {
                 ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => {
                     let output = *output;

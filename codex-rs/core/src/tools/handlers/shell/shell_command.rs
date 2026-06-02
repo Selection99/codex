@@ -2,6 +2,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ShellCommandToolCallParams;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
+use futures::future::BoxFuture;
 
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
@@ -18,6 +19,7 @@ use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -27,6 +29,7 @@ use codex_tools::ToolSpec;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_shell_command_tool;
+use super::ExecLikeOutput;
 use super::RunExecLikeArgs;
 use super::run_exec_like;
 use super::shell_command_payload_command;
@@ -112,39 +115,11 @@ impl ShellCommandHandler {
             arg0: None,
         })
     }
-}
 
-impl From<ShellCommandBackendConfig> for ShellCommandHandler {
-    fn from(backend_config: ShellCommandBackendConfig) -> Self {
-        Self::new(ShellCommandHandlerOptions {
-            backend_config,
-            allow_login_shell: false,
-            exec_permission_approvals_enabled: false,
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
-    fn tool_name(&self) -> ToolName {
-        ToolName::plain("shell_command")
-    }
-
-    fn spec(&self) -> ToolSpec {
-        create_shell_command_tool(CommandToolOptions {
-            allow_login_shell: self.options.allow_login_shell,
-            exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
-        })
-    }
-
-    fn supports_parallel_tool_calls(&self) -> bool {
-        true
-    }
-
-    async fn handle(
+    async fn handle_shell_command(
         &self,
         invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+    ) -> Result<ExecLikeOutput, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -198,7 +173,43 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
             shell_runtime_backend: self.shell_runtime_backend(),
         })
         .await
-        .map(boxed_tool_output)
+    }
+}
+
+impl From<ShellCommandBackendConfig> for ShellCommandHandler {
+    fn from(backend_config: ShellCommandBackendConfig) -> Self {
+        Self::new(ShellCommandHandlerOptions {
+            backend_config,
+            allow_login_shell: false,
+            exec_permission_approvals_enabled: false,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("shell_command")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        create_shell_command_tool(CommandToolOptions {
+            allow_login_shell: self.options.allow_login_shell,
+            exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+        })
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        self.handle_shell_command(invocation)
+            .await
+            .map(|result| boxed_tool_output(result.output))
     }
 }
 
@@ -209,6 +220,22 @@ impl CoreToolRuntime for ShellCommandHandler {
 
     fn waits_for_runtime_cancellation(&self) -> bool {
         true
+    }
+
+    fn handle_any<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<AnyToolResult, FunctionCallError>> {
+        Box::pin(async move {
+            let result = self.handle_shell_command(invocation.clone()).await?;
+            let output = boxed_tool_output(result.output);
+            Ok(AnyToolResult::new(
+                self,
+                invocation,
+                output,
+                result.sandbox_outcome,
+            ))
+        })
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
