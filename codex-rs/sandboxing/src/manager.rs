@@ -61,24 +61,37 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
     }
 }
 
+fn with_managed_mitm_ca_readable_roots(
+    permission_profile: PermissionProfile,
+    managed_mitm_ca_trust_bundle_paths: &[AbsolutePathBuf],
+    sandbox_policy_cwd: &Path,
+) -> PermissionProfile {
+    if managed_mitm_ca_trust_bundle_paths.is_empty() {
+        return permission_profile;
+    }
+    let (file_system_sandbox_policy, network_sandbox_policy) =
+        permission_profile.to_runtime_permissions();
+    let file_system_sandbox_policy = file_system_sandbox_policy
+        .with_additional_readable_roots(sandbox_policy_cwd, managed_mitm_ca_trust_bundle_paths);
+    PermissionProfile::from_runtime_permissions_with_enforcement(
+        permission_profile.enforcement(),
+        &file_system_sandbox_policy,
+        network_sandbox_policy,
+    )
+}
+
 pub fn with_managed_mitm_ca_readable_root(
     permission_profile: PermissionProfile,
     managed_mitm_ca_trust_bundle_path: Option<&AbsolutePathBuf>,
     sandbox_policy_cwd: &Path,
 ) -> PermissionProfile {
-    let Some(managed_mitm_ca_trust_bundle_path) = managed_mitm_ca_trust_bundle_path else {
+    let Some(path) = managed_mitm_ca_trust_bundle_path else {
         return permission_profile;
     };
-    let (file_system_sandbox_policy, network_sandbox_policy) =
-        permission_profile.to_runtime_permissions();
-    let file_system_sandbox_policy = file_system_sandbox_policy.with_additional_readable_roots(
+    with_managed_mitm_ca_readable_roots(
+        permission_profile,
+        std::slice::from_ref(path),
         sandbox_policy_cwd,
-        std::slice::from_ref(managed_mitm_ca_trust_bundle_path),
-    );
-    PermissionProfile::from_runtime_permissions_with_enforcement(
-        permission_profile.enforcement(),
-        &file_system_sandbox_policy,
-        network_sandbox_policy,
     )
 }
 
@@ -203,13 +216,18 @@ impl SandboxManager {
             windows_sandbox_private_desktop,
         } = request;
         let additional_permissions = command.additional_permissions.take();
-        let managed_mitm_ca_trust_bundle_path =
-            network.and_then(NetworkProxy::managed_mitm_ca_trust_bundle_path);
-        let effective_permission_profile =
+        let mut effective_permission_profile =
             effective_permission_profile(permissions, additional_permissions.as_ref());
-        let effective_permission_profile = with_managed_mitm_ca_readable_root(
+        let managed_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
+            let file_system_sandbox_policy =
+                effective_permission_profile.file_system_sandbox_policy();
+            network.prepare_child_env(&mut command.env, command.cwd.as_path(), |path| {
+                file_system_sandbox_policy.can_read_path_with_cwd(path, command.cwd.as_path())
+            })
+        });
+        effective_permission_profile = with_managed_mitm_ca_readable_roots(
             effective_permission_profile,
-            managed_mitm_ca_trust_bundle_path.as_ref(),
+            &managed_mitm_ca_trust_bundle_paths,
             sandbox_policy_cwd,
         );
         let (effective_file_system_policy, effective_network_policy) =

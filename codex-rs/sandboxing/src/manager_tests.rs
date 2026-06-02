@@ -4,7 +4,7 @@ use super::SandboxTransformRequest;
 use super::SandboxType;
 use super::SandboxablePreference;
 use super::get_platform_sandbox;
-use super::with_managed_mitm_ca_readable_root;
+use super::with_managed_mitm_ca_readable_roots;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
@@ -261,9 +261,9 @@ fn managed_mitm_ca_bundle_becomes_readable_for_restricted_sandbox() {
         NetworkSandboxPolicy::Restricted,
     );
 
-    let permission_profile = with_managed_mitm_ca_readable_root(
+    let permission_profile = with_managed_mitm_ca_readable_roots(
         permission_profile,
-        Some(&managed_bundle_path),
+        std::slice::from_ref(&managed_bundle_path),
         cwd.as_path(),
     );
     let (file_system_sandbox_policy, _) = permission_profile.to_runtime_permissions();

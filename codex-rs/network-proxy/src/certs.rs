@@ -122,6 +122,7 @@ pub const CUSTOM_CA_ENV_KEYS: [&str; 10] = [
 pub(crate) struct ManagedMitmCaTrustBundle {
     pub(crate) path: PathBuf,
     pub(crate) startup_env_values: HashMap<&'static str, String>,
+    pub(crate) startup_cwd: PathBuf,
 }
 
 fn managed_ca_paths() -> Result<(PathBuf, PathBuf)> {
@@ -146,6 +147,8 @@ fn managed_ca_trust_bundle_for_cert_path(
     cert_path: &Path,
     env: &HashMap<&'static str, String>,
 ) -> Result<ManagedMitmCaTrustBundle> {
+    let startup_cwd =
+        std::env::current_dir().context("failed to resolve startup cwd for managed MITM CA")?;
     let startup_env_values = CUSTOM_CA_ENV_KEYS
         .into_iter()
         .filter_map(|key| {
@@ -160,6 +163,7 @@ fn managed_ca_trust_bundle_for_cert_path(
     Ok(ManagedMitmCaTrustBundle {
         path,
         startup_env_values,
+        startup_cwd,
     })
 }
 
@@ -184,13 +188,7 @@ fn is_current_generated_trust_bundle_path(path: &Path, managed_ca_cert_path: &Pa
     let Some(proxy_dir) = managed_ca_cert_path.parent() else {
         return false;
     };
-    let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
-        return false;
-    };
-    if path.parent() != Some(proxy_dir)
-        || !file_name.starts_with(MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX)
-        || !file_name.ends_with(".pem")
-    {
+    if !matches_generated_trust_bundle_path(path, proxy_dir) {
         return false;
     }
     let Ok(trust_bundle) = fs::read(path) else {
@@ -220,6 +218,30 @@ fn persist_managed_ca_trust_bundle(
     let proxy_dir = managed_ca_cert_path
         .parent()
         .ok_or_else(|| anyhow!("managed MITM CA cert path is missing a parent"))?;
+    persist_ca_trust_bundle(proxy_dir, trust_bundle)
+}
+
+pub(crate) fn materialize_ca_trust_bundle_with_custom_ca(
+    managed_ca_trust_bundle: &ManagedMitmCaTrustBundle,
+    custom_ca_bundle_path: &Path,
+) -> Result<PathBuf> {
+    let proxy_dir = managed_ca_trust_bundle
+        .path
+        .parent()
+        .ok_or_else(|| anyhow!("managed MITM CA trust bundle path is missing a parent"))?;
+    if custom_ca_bundle_path == managed_ca_trust_bundle.path
+        || is_generated_trust_bundle_path(custom_ca_bundle_path, managed_ca_trust_bundle)
+    {
+        return Ok(custom_ca_bundle_path.to_path_buf());
+    }
+
+    let mut trust_bundle = String::new();
+    append_pem_file(&mut trust_bundle, custom_ca_bundle_path)?;
+    append_pem_file(&mut trust_bundle, &managed_ca_trust_bundle.path)?;
+    persist_ca_trust_bundle(proxy_dir, &trust_bundle)
+}
+
+fn persist_ca_trust_bundle(proxy_dir: &Path, trust_bundle: &str) -> Result<PathBuf> {
     fs::create_dir_all(proxy_dir)
         .with_context(|| format!("failed to create {}", proxy_dir.display()))?;
     let hash = Sha256::digest(trust_bundle.as_bytes());
@@ -240,8 +262,39 @@ fn persist_managed_ca_trust_bundle(
     Ok(trust_bundle_path)
 }
 
+pub(crate) fn is_generated_trust_bundle_path(
+    path: &Path,
+    managed_ca_trust_bundle: &ManagedMitmCaTrustBundle,
+) -> bool {
+    let Some(proxy_dir) = managed_ca_trust_bundle.path.parent() else {
+        return false;
+    };
+    if !matches_generated_trust_bundle_path(path, proxy_dir) {
+        return false;
+    }
+    let Ok(trust_bundle) = fs::read(path) else {
+        return false;
+    };
+    let Ok(managed_ca_trust_bundle) = fs::read(&managed_ca_trust_bundle.path) else {
+        return false;
+    };
+    !managed_ca_trust_bundle.is_empty()
+        && trust_bundle
+            .windows(managed_ca_trust_bundle.len())
+            .any(|window| window == managed_ca_trust_bundle)
+}
+
+fn matches_generated_trust_bundle_path(path: &Path, proxy_dir: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
+        return false;
+    };
+    path.parent() == Some(proxy_dir)
+        && file_name.starts_with(MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX)
+        && file_name.ends_with(".pem")
+}
+
 fn append_pem_file(bundle: &mut String, path: &Path) -> Result<()> {
-    if !bundle.ends_with('\n') {
+    if !bundle.is_empty() && !bundle.ends_with('\n') {
         bundle.push('\n');
     }
     let pem = fs::read_to_string(path)
