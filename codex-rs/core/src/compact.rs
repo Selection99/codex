@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::compact_remote::estimate_compaction_request_tokens;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -131,7 +132,7 @@ async fn run_compact_task_inner(
 ) -> CodexResult<()> {
     let compaction_metadata =
         CompactionTurnMetadata::new(trigger, reason, CompactionImplementation::Responses, phase);
-    let attempt = CompactionAnalyticsAttempt::begin(
+    let mut attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
         trigger,
@@ -157,6 +158,7 @@ async fn run_compact_task_inner(
         input,
         initial_context_injection,
         compaction_metadata,
+        &mut attempt,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -178,6 +180,7 @@ async fn run_compact_task_inner_impl(
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    attempt: &mut CompactionAnalyticsAttempt,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
@@ -209,6 +212,7 @@ async fn run_compact_task_inner_impl(
             personality: turn_context.personality,
             ..Default::default()
         };
+        attempt.set_active_context_tokens_before(estimate_compaction_request_tokens(&prompt));
         let window_id = sess.services.model_client.current_window_id();
         let turn_metadata_header = turn_context
             .turn_metadata_state
@@ -337,6 +341,15 @@ impl CompactionAnalyticsAttempt {
             started_at: now_unix_seconds(),
             start_instant: Instant::now(),
         }
+    }
+
+    pub(crate) fn set_active_context_tokens_before(&mut self, tokens: i64) {
+        self.active_context_tokens_before = tokens;
+    }
+
+    pub(crate) fn subtract_active_context_tokens_before(&mut self, tokens: i64) {
+        self.active_context_tokens_before =
+            self.active_context_tokens_before.saturating_sub(tokens);
     }
 
     pub(crate) async fn track(

@@ -33,6 +33,8 @@ use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use futures::TryFutureExt;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -96,7 +98,7 @@ async fn run_remote_compact_task_inner(
         CompactionImplementation::ResponsesCompact,
         phase,
     );
-    let attempt = CompactionAnalyticsAttempt::begin(
+    let mut attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
         trigger,
@@ -125,6 +127,7 @@ async fn run_remote_compact_task_inner(
         turn_context,
         initial_context_injection,
         compaction_metadata,
+        &mut attempt,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -153,6 +156,7 @@ async fn run_remote_compact_task_inner_impl(
     turn_context: &Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    attempt: &mut CompactionAnalyticsAttempt,
 ) -> CodexResult<()> {
     let context_compaction_item = ContextCompactionItem::new();
     // Use the UI compaction item ID as the trace compaction ID so protocol lifecycle events,
@@ -168,16 +172,26 @@ async fn run_remote_compact_task_inner_impl(
         .await;
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_base_instructions().await;
-    let deleted_items = trim_function_call_history_to_fit_context_window(
-        &mut history,
-        turn_context.as_ref(),
-        &base_instructions,
-    );
+    let (deleted_items, estimated_deleted_tokens) =
+        trim_function_call_history_to_fit_context_window(
+            &mut history,
+            turn_context.as_ref(),
+            &base_instructions,
+        );
     if deleted_items > 0 {
         info!(
             turn_id = %turn_context.sub_id,
             deleted_items,
             "trimmed history items before remote compaction"
+        );
+    }
+    if estimated_deleted_tokens > 0 {
+        let max_local_deleted_tokens = sess
+            .get_total_token_usage_breakdown()
+            .await
+            .estimated_tokens_of_items_added_since_last_successful_api_response;
+        attempt.subtract_active_context_tokens_before(
+            estimated_deleted_tokens.min(max_local_deleted_tokens),
         );
     }
     // This is the history selected for remote compaction, after any trimming required to fit the
@@ -266,6 +280,31 @@ async fn run_remote_compact_task_inner_impl(
     sess.emit_turn_item_completed(turn_context, compaction_item)
         .await;
     Ok(())
+}
+
+pub(crate) fn estimate_compaction_request_tokens(prompt: &Prompt) -> i64 {
+    let instructions_tokens = approx_text_tokens(&prompt.base_instructions.text);
+    let input_tokens = prompt
+        .input
+        .iter()
+        .map(estimate_response_item_model_visible_bytes)
+        .map(approx_tokens_from_byte_count_i64)
+        .fold(0i64, i64::saturating_add);
+    let tools_tokens = prompt
+        .tools
+        .iter()
+        .map(serde_json::to_string)
+        .map(Result::unwrap_or_default)
+        .map(|tool| approx_text_tokens(&tool))
+        .fold(0i64, i64::saturating_add);
+
+    instructions_tokens
+        .saturating_add(input_tokens)
+        .saturating_add(tools_tokens)
+}
+
+fn approx_text_tokens(text: &str) -> i64 {
+    i64::try_from(approx_token_count(text)).unwrap_or(i64::MAX)
 }
 
 pub(crate) async fn process_compacted_history(
@@ -378,16 +417,19 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     history: &mut ContextManager,
     turn_context: &TurnContext,
     base_instructions: &BaseInstructions,
-) -> usize {
+) -> (usize, i64) {
     let mut deleted_items = 0usize;
+    let mut estimated_deleted_tokens = 0i64;
     let Some(context_window) = turn_context.model_context_window() else {
-        return deleted_items;
+        return (deleted_items, estimated_deleted_tokens);
     };
 
-    while history
-        .estimate_token_count_with_base_instructions(base_instructions)
-        .is_some_and(|estimated_tokens| estimated_tokens > context_window)
+    while let Some(estimated_tokens_before) =
+        history.estimate_token_count_with_base_instructions(base_instructions)
     {
+        if estimated_tokens_before <= context_window {
+            break;
+        }
         let Some(last_item) = history.raw_items().last() else {
             break;
         };
@@ -397,8 +439,60 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
         if !history.remove_last_item() {
             break;
         }
+        let estimated_tokens_after = history
+            .estimate_token_count_with_base_instructions(base_instructions)
+            .unwrap_or_default();
         deleted_items += 1;
+        estimated_deleted_tokens = estimated_deleted_tokens
+            .saturating_add(estimated_tokens_before.saturating_sub(estimated_tokens_after));
     }
 
-    deleted_items
+    (deleted_items, estimated_deleted_tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::ContentItem;
+    use codex_tools::ToolSpec;
+
+    #[test]
+    fn estimate_compaction_request_tokens_counts_request_components() {
+        let message = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello from input".to_string(),
+            }],
+            phase: None,
+        };
+        let tool = ToolSpec::WebSearch {
+            external_web_access: Some(true),
+            filters: None,
+            user_location: None,
+            search_context_size: None,
+            search_content_types: None,
+        };
+        let prompt = Prompt {
+            input: vec![message.clone()],
+            tools: vec![tool.clone()],
+            parallel_tool_calls: false,
+            base_instructions: BaseInstructions {
+                text: "base instructions".to_string(),
+            },
+            personality: None,
+            output_schema: None,
+            output_schema_strict: true,
+        };
+
+        let expected = approx_text_tokens(&prompt.base_instructions.text)
+            .saturating_add(approx_tokens_from_byte_count_i64(
+                estimate_response_item_model_visible_bytes(&message),
+            ))
+            .saturating_add(approx_text_tokens(
+                &serde_json::to_string(&tool).expect("tool serializes"),
+            ));
+
+        assert_eq!(estimate_compaction_request_tokens(&prompt), expected);
+    }
 }
