@@ -25,6 +25,7 @@ pub(crate) struct Session {
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) out_of_band_elicitation_paused: watch::Sender<bool>,
     pub(super) state: Mutex<SessionState>,
+    pub(super) protected_data_mode: Mutex<ProtectedDataModeState>,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
@@ -506,6 +507,7 @@ impl Session {
         thread_store: Arc<dyn ThreadStore>,
         parent_rollout_thread_trace: ThreadTraceContext,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
+        protected_data_mode_exit_policy: Arc<RwLock<Arc<dyn crate::ProtectedDataModeExitPolicy>>>,
         multi_agent_version: Option<MultiAgentVersion>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
@@ -541,6 +543,9 @@ impl Session {
             .unwrap_or(u64::MAX),
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => 0,
         };
+        let protected_data_mode = initial_history
+            .get_protected_data_mode_state()
+            .unwrap_or_default();
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
@@ -573,6 +578,7 @@ impl Session {
                                     } else {
                                         ThreadMemoryMode::Disabled
                                     },
+                                    protected_data_mode: Default::default(),
                                 },
                             },
                         )
@@ -594,6 +600,9 @@ impl Session {
                                     } else {
                                         ThreadMemoryMode::Disabled
                                     },
+                                    protected_data_mode: initial_history
+                                        .get_protected_data_mode_state()
+                                        .unwrap_or_default(),
                                 },
                             },
                         )
@@ -1031,6 +1040,7 @@ impl Session {
                 live_thread: live_thread_init.as_ref().cloned(),
                 thread_store: Arc::clone(&thread_store),
                 attestation_provider: attestation_provider.clone(),
+                protected_data_mode_exit_policy,
                 model_client: ModelClient::new(
                     Some(Arc::clone(&auth_manager)),
                     session_id,
@@ -1067,6 +1077,7 @@ impl Session {
                 agent_status,
                 out_of_band_elicitation_paused,
                 state: Mutex::new(state),
+                protected_data_mode: Mutex::new(protected_data_mode),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,

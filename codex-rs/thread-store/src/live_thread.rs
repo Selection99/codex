@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::persisted_rollout_items;
@@ -219,6 +220,25 @@ impl LiveThread {
                 thread_id: self.thread_id,
                 patch: ThreadMetadataPatch {
                     memory_mode: Some(mode),
+                    ..Default::default()
+                },
+                include_archived,
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_protected_data_mode(
+        &self,
+        state: ProtectedDataModeState,
+        include_archived: bool,
+    ) -> ThreadStoreResult<()> {
+        self.flush_pending_metadata_update().await?;
+        self.thread_store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id: self.thread_id,
+                patch: ThreadMetadataPatch {
+                    protected_data_mode: Some(state),
                     ..Default::default()
                 },
                 include_archived,

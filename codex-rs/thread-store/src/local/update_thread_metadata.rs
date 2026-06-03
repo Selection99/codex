@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -76,6 +77,10 @@ pub(super) async fn update_thread_metadata(
     if let Some(memory_mode) = patch.memory_mode {
         apply_thread_memory_mode(resolved_rollout_path.path.as_path(), thread_id, memory_mode)
             .await?;
+        refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
+    }
+    if let Some(state) = patch.protected_data_mode {
+        apply_protected_data_mode(resolved_rollout_path.path.as_path(), thread_id, state).await?;
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
     }
 
@@ -304,6 +309,9 @@ async fn apply_metadata_update(
                 metadata.git_branch = branch;
                 metadata.git_origin_url = origin_url;
             }
+            if let Some(state) = patch.protected_data_mode {
+                metadata.protected_data_mode = state;
+            }
             state_db
                 .upsert_thread(&metadata)
                 .await
@@ -356,7 +364,10 @@ fn needs_rollout_compatibility_update(patch: &ThreadMetadataPatch) -> bool {
     if patch.name.is_some() {
         return true;
     }
-    if patch.memory_mode.is_none() && patch.git_info.is_none() {
+    if patch.memory_mode.is_none()
+        && patch.protected_data_mode.is_none()
+        && patch.git_info.is_none()
+    {
         return false;
     }
     !has_observed_metadata_facts(patch)
@@ -551,6 +562,34 @@ async fn apply_thread_memory_mode(
         })
 }
 
+async fn apply_protected_data_mode(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    state: ProtectedDataModeState,
+) -> ThreadStoreResult<()> {
+    let mut session_meta =
+        read_session_meta_line(rollout_path)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to set protected data mode: {err}"),
+            })?;
+    if session_meta.meta.id != thread_id {
+        return Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to set protected data mode: rollout session metadata id mismatch: expected {thread_id}, found {}",
+                session_meta.meta.id
+            ),
+        });
+    }
+    session_meta.git = None;
+    session_meta.meta.protected_data_mode = Some(state);
+    append_rollout_item_to_path(rollout_path, &RolloutItem::SessionMeta(session_meta))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set protected data mode: {err}"),
+        })
+}
+
 fn memory_mode_as_str(mode: ThreadMemoryMode) -> &'static str {
     match mode {
         ThreadMemoryMode::Enabled => "enabled",
@@ -699,6 +738,93 @@ mod tests {
             .await
             .expect("thread memory mode should be readable");
         assert_eq!(memory_mode.as_deref(), Some("disabled"));
+    }
+
+    #[tokio::test]
+    async fn update_thread_metadata_sets_protected_data_mode_on_active_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(303);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let path =
+            write_session_file(home.path(), "2025-01-03T15-00-00", uuid).expect("session file");
+        let state = ProtectedDataModeState {
+            active: true,
+            categories: vec!["financial".to_string()],
+            reason: Some("ledger result".to_string()),
+        };
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+
+        let thread = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    protected_data_mode: Some(state.clone()),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set protected data mode");
+
+        assert_eq!(thread.protected_data_mode, state);
+        let appended = last_rollout_item(path.as_path());
+        assert_eq!(appended["type"], "session_meta");
+        assert_eq!(appended["payload"]["protected_data_mode"]["active"], true);
+        assert_eq!(
+            runtime
+                .get_thread(thread_id)
+                .await
+                .expect("thread metadata should be readable")
+                .expect("thread metadata")
+                .protected_data_mode,
+            state
+        );
+    }
+
+    #[tokio::test]
+    async fn rollout_only_read_uses_latest_protected_data_mode_state() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(304);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T15-30-00", uuid).expect("session file");
+        let state = ProtectedDataModeState {
+            active: true,
+            categories: vec!["identity".to_string()],
+            reason: Some("kitchen sink result".to_string()),
+        };
+
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    protected_data_mode: Some(state.clone()),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set protected data mode");
+
+        assert_eq!(
+            store
+                .read_thread(ReadThreadParams {
+                    thread_id,
+                    include_archived: false,
+                    include_history: false,
+                })
+                .await
+                .expect("read rollout-only thread")
+                .protected_data_mode,
+            state
+        );
     }
 
     #[tokio::test]
@@ -1621,6 +1747,7 @@ mod tests {
             cwd: Some(std::env::current_dir().expect("cwd")),
             model_provider: "test-provider".to_string(),
             memory_mode: ThreadMemoryMode::Enabled,
+            protected_data_mode: Default::default(),
         }
     }
 

@@ -714,6 +714,7 @@ impl RolloutRecorder {
                         Some(dynamic_tools)
                     },
                     memory_mode: (!config.generate_memories()).then_some("disabled".to_string()),
+                    protected_data_mode: None,
                     multi_agent_version,
                 };
 

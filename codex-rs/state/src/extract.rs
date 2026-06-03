@@ -68,6 +68,9 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
         metadata.git_branch = git.branch.clone();
         metadata.git_origin_url = git.repository_url.clone();
     }
+    if let Some(state) = meta_line.meta.protected_data_mode.clone() {
+        metadata.protected_data_mode = state;
+    }
 }
 
 fn apply_turn_context(metadata: &mut ThreadMetadata, turn_ctx: &TurnContextItem) {

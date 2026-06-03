@@ -1070,6 +1070,11 @@ impl MessageProcessor {
             ClientRequest::ThreadMemoryModeSet { params, .. } => {
                 self.thread_processor.thread_memory_mode_set(params).await
             }
+            ClientRequest::ThreadProtectedDataModeExit { params, .. } => {
+                self.thread_processor
+                    .thread_protected_data_mode_exit(params)
+                    .await
+            }
             ClientRequest::MemoryReset { .. } => self.thread_processor.memory_reset().await,
             ClientRequest::ThreadUnarchive { params, .. } => {
                 self.thread_processor

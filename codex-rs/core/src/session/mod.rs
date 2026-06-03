@@ -197,6 +197,7 @@ use codex_protocol::exec_output::StreamOutput;
 
 mod config_lock;
 mod handlers;
+pub(crate) use handlers::merge_protected_data_mode;
 mod inject;
 mod input_queue;
 mod mcp;
@@ -347,6 +348,7 @@ use codex_protocol::protocol::ModelVerificationEvent;
 use codex_protocol::protocol::NetworkApprovalContext;
 use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RequestUserInputEvent;
 use codex_protocol::protocol::ReviewDecision;
@@ -420,6 +422,8 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) analytics_events_client: Option<AnalyticsEventsClient>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
+    pub(crate) protected_data_mode_exit_policy:
+        Arc<RwLock<Arc<dyn crate::ProtectedDataModeExitPolicy>>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
 }
 
@@ -500,6 +504,7 @@ impl Codex {
             analytics_events_client,
             thread_store,
             attestation_provider,
+            protected_data_mode_exit_policy,
             inherited_multi_agent_version,
         } = args;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -647,6 +652,7 @@ impl Codex {
             thread_store,
             parent_rollout_thread_trace,
             attestation_provider,
+            protected_data_mode_exit_policy,
             multi_agent_version,
         ))
         .await

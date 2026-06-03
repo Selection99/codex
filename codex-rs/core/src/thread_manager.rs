@@ -1,3 +1,4 @@
+use crate::ProtectedDataModeExitPolicy;
 use crate::SkillsManager;
 use crate::agent::AgentControl;
 use crate::attestation::AttestationProvider;
@@ -7,6 +8,7 @@ use crate::config::ThreadStoreConfig;
 use crate::environment_selection::default_thread_environment_selections;
 use crate::environment_selection::resolve_environment_selections;
 use crate::mcp::McpManager;
+use crate::protected_data_mode::default_exit_policy;
 use crate::rollout::truncation;
 use crate::session::Codex;
 use crate::session::CodexSpawnArgs;
@@ -209,6 +211,7 @@ pub(crate) struct ThreadManagerState {
     extensions: Arc<ExtensionRegistry<Config>>,
     thread_store: Arc<dyn ThreadStore>,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
+    protected_data_mode_exit_policy: Arc<RwLock<Arc<dyn ProtectedDataModeExitPolicy>>>,
     session_source: SessionSource,
     installation_id: String,
     analytics_events_client: Option<AnalyticsEventsClient>,
@@ -288,6 +291,7 @@ impl ThreadManager {
                 extensions,
                 thread_store,
                 attestation_provider,
+                protected_data_mode_exit_policy: default_exit_policy(),
                 auth_manager,
                 session_source,
                 installation_id,
@@ -389,6 +393,7 @@ impl ThreadManager {
                 extensions: empty_extension_registry(),
                 thread_store,
                 attestation_provider: None,
+                protected_data_mode_exit_policy: default_exit_policy(),
                 auth_manager,
                 session_source: SessionSource::Exec,
                 installation_id,
@@ -423,6 +428,13 @@ impl ThreadManager {
 
     pub fn environment_manager(&self) -> Arc<EnvironmentManager> {
         self.state.environment_manager.clone()
+    }
+
+    pub async fn set_protected_data_mode_exit_policy(
+        &self,
+        policy: Arc<dyn ProtectedDataModeExitPolicy>,
+    ) {
+        *self.state.protected_data_mode_exit_policy.write().await = policy;
     }
 
     pub fn default_environment_selections(
@@ -1335,6 +1347,7 @@ impl ThreadManagerState {
             analytics_events_client: self.analytics_events_client.clone(),
             thread_store: Arc::clone(&self.thread_store),
             attestation_provider: self.attestation_provider.clone(),
+            protected_data_mode_exit_policy: Arc::clone(&self.protected_data_mode_exit_policy),
             inherited_multi_agent_version: multi_agent_version,
         }))
         .await?;

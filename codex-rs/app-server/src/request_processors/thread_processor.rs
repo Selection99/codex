@@ -519,6 +519,25 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_protected_data_mode_exit(
+        &self,
+        params: ThreadProtectedDataModeExitParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let ThreadProtectedDataModeExitParams { thread_id } = params;
+        let thread_id = ThreadId::from_string(&thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let thread = self
+            .thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|err| core_thread_write_error("exit protected data mode", err))?;
+        thread
+            .submit(Op::ExitProtectedDataMode)
+            .await
+            .map_err(|err| internal_error(format!("failed to exit protected data mode: {err}")))?;
+        Ok(Some(ThreadProtectedDataModeExitResponse {}.into()))
+    }
+
     pub(crate) async fn memory_reset(
         &self,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
@@ -4002,6 +4021,7 @@ pub(crate) fn thread_from_stored_thread(
         thread_source: thread.thread_source.map(Into::into),
         git_info,
         name: thread.name,
+        protected_data_mode: thread.protected_data_mode,
         turns: Vec::new(),
     };
     (thread, history)
@@ -4207,6 +4227,7 @@ fn build_thread_from_snapshot(
         thread_source: config_snapshot.thread_source.map(Into::into),
         git_info: None,
         name: None,
+        protected_data_mode: Default::default(),
         turns: Vec::new(),
     }
 }

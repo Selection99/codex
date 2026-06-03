@@ -631,6 +631,27 @@
         }
       ]
     },
+    "ProtectedDataModeState": {
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ReasoningEffort": {
       "description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
       "enum": [
@@ -869,6 +890,14 @@
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
         },
+        "protectedDataMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProtectedDataModeState"
+            }
+          ],
+          "description": "Protected data mode state for this thread."
+        },
         "sessionId": {
           "description": "Session id shared by threads that belong to the same session tree.",
           "type": "string"
@@ -921,6 +950,7 @@
         "id",
         "modelProvider",
         "preview",
+        "protectedDataMode",
         "sessionId",
         "source",
         "status",

@@ -63,6 +63,7 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,
         first_user_message: Some(first_user_message.to_string()),
+        protected_data_mode: Default::default(),
         history: None,
     }
 }

@@ -4,6 +4,7 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
@@ -107,6 +108,8 @@ pub struct ThreadMetadata {
     pub git_branch: Option<String>,
     /// The git origin URL, if known.
     pub git_origin_url: Option<String>,
+    /// Protected data mode state serialized by the thread store.
+    pub protected_data_mode: ProtectedDataModeState,
 }
 
 /// Builder data required to construct [`ThreadMetadata`] without parsing filenames.
@@ -221,6 +224,7 @@ impl ThreadMetadataBuilder {
             git_sha: self.git_sha.clone(),
             git_branch: self.git_branch.clone(),
             git_origin_url: self.git_origin_url.clone(),
+            protected_data_mode: Default::default(),
         }
     }
 }
@@ -326,6 +330,9 @@ impl ThreadMetadata {
         if self.git_origin_url != other.git_origin_url {
             diffs.push("git_origin_url");
         }
+        if self.protected_data_mode != other.protected_data_mode {
+            diffs.push("protected_data_mode");
+        }
         diffs
     }
 }
@@ -360,6 +367,7 @@ pub(crate) struct ThreadRow {
     git_sha: Option<String>,
     git_branch: Option<String>,
     git_origin_url: Option<String>,
+    protected_data_mode: String,
 }
 
 impl ThreadRow {
@@ -389,6 +397,7 @@ impl ThreadRow {
             git_sha: row.try_get("git_sha")?,
             git_branch: row.try_get("git_branch")?,
             git_origin_url: row.try_get("git_origin_url")?,
+            protected_data_mode: row.try_get("protected_data_mode")?,
         })
     }
 }
@@ -422,6 +431,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             git_sha,
             git_branch,
             git_origin_url,
+            protected_data_mode,
         } = row;
         let thread_source = thread_source
             .map(|thread_source| thread_source.parse())
@@ -453,6 +463,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             git_sha,
             git_branch,
             git_origin_url,
+            protected_data_mode: serde_json::from_str(&protected_data_mode).unwrap_or_default(),
         })
     }
 }

@@ -527,6 +527,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMemoryModeSetResponse,
     },
+    #[experimental("thread/protected-data-mode/exit")]
+    ThreadProtectedDataModeExit => "thread/protected-data-mode/exit" {
+        params: v2::ThreadProtectedDataModeExitParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadProtectedDataModeExitResponse,
+    },
     #[experimental("memory/reset")]
     MemoryReset => "memory/reset" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
@@ -1504,6 +1510,7 @@ server_notification_definitions! {
     #[experimental("thread/settings/updated")]
     ThreadSettingsUpdated => "thread/settings/updated" (v2::ThreadSettingsUpdatedNotification),
     ThreadTokenUsageUpdated => "thread/tokenUsage/updated" (v2::ThreadTokenUsageUpdatedNotification),
+    ThreadProtectedDataModeUpdated => "thread/protectedDataMode/updated" (v2::ThreadProtectedDataModeUpdatedNotification),
     TurnStarted => "turn/started" (v2::TurnStartedNotification),
     HookStarted => "hook/started" (v2::HookStartedNotification),
     TurnCompleted => "turn/completed" (v2::TurnCompletedNotification),
@@ -2396,6 +2403,7 @@ mod tests {
                     agent_role: None,
                     git_info: None,
                     name: None,
+                    protected_data_mode: Default::default(),
                     turns: Vec::new(),
                 },
                 model: "gpt-5".to_string(),

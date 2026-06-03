@@ -182,6 +182,7 @@ impl ThreadStore for InMemoryThreadStore {
             dynamic_tools: (!params.dynamic_tools.is_empty()).then(|| params.dynamic_tools.clone()),
             memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)
                 .then_some("disabled".to_string()),
+            protected_data_mode: Some(params.metadata.protected_data_mode.clone()),
             multi_agent_version: params.multi_agent_version,
             ..SessionMeta::default()
         };
@@ -401,6 +402,9 @@ fn stored_thread_from_state(
             .unwrap_or_else(PermissionProfile::read_only),
         token_usage: metadata.and_then(|metadata| metadata.token_usage.clone()),
         first_user_message: metadata.and_then(|metadata| metadata.first_user_message.clone()),
+        protected_data_mode: metadata
+            .and_then(|metadata| metadata.protected_data_mode.clone())
+            .unwrap_or_else(|| created.metadata.protected_data_mode.clone()),
         history,
     })
 }

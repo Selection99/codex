@@ -85,6 +85,7 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::ThreadRolledBack(_)
+        | EventMsg::ThreadProtectedDataModeUpdated(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)

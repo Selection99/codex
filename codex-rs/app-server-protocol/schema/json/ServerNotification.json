@@ -2656,6 +2656,27 @@
         }
       ]
     },
+    "ProtectedDataModeState": {
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "RateLimitReachedType": {
       "enum": [
         "rate_limit_reached",
@@ -3420,6 +3441,14 @@
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
         },
+        "protectedDataMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProtectedDataModeState"
+            }
+          ],
+          "description": "Protected data mode state for this thread."
+        },
         "sessionId": {
           "description": "Session id shared by threads that belong to the same session tree.",
           "type": "string"
@@ -3472,6 +3501,7 @@
         "id",
         "modelProvider",
         "preview",
+        "protectedDataMode",
         "sessionId",
         "source",
         "status",
@@ -4286,6 +4316,21 @@
         }
       },
       "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadProtectedDataModeUpdatedNotification": {
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/ProtectedDataModeState"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
         "threadId"
       ],
       "type": "object"
@@ -5547,6 +5592,26 @@
         "params"
       ],
       "title": "Thread/tokenUsage/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/protectedDataMode/updated"
+          ],
+          "title": "Thread/protectedDataMode/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadProtectedDataModeUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/protectedDataMode/updatedNotification",
       "type": "object"
     },
     {

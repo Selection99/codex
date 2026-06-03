@@ -10,6 +10,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode as MemoryMode;
@@ -54,6 +55,8 @@ pub struct ThreadPersistenceMetadata {
     pub model_provider: String,
     /// Memory mode associated with the live thread.
     pub memory_mode: MemoryMode,
+    /// Protected data mode state associated with the live thread.
+    pub protected_data_mode: ProtectedDataModeState,
 }
 
 /// Parameters required to create a persisted thread.
@@ -395,6 +398,8 @@ pub struct StoredThread {
     pub token_usage: Option<TokenUsage>,
     /// First user message observed for this thread, if any.
     pub first_user_message: Option<String>,
+    /// Protected data mode state for the thread.
+    pub protected_data_mode: ProtectedDataModeState,
     /// Persisted history, populated only when requested.
     pub history: Option<StoredThreadHistory>,
 }
@@ -522,6 +527,8 @@ pub struct ThreadMetadataPatch {
     pub git_info: Option<GitInfoPatch>,
     /// Thread memory behavior.
     pub memory_mode: Option<MemoryMode>,
+    /// Thread protected data mode state.
+    pub protected_data_mode: Option<ProtectedDataModeState>,
 }
 
 impl ThreadMetadataPatch {
@@ -599,6 +606,9 @@ impl ThreadMetadataPatch {
         if next.memory_mode.is_some() {
             self.memory_mode = next.memory_mode;
         }
+        if next.protected_data_mode.is_some() {
+            self.protected_data_mode = next.protected_data_mode;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -624,6 +634,7 @@ impl ThreadMetadataPatch {
             && self.first_user_message.is_none()
             && self.git_info.is_none()
             && self.memory_mode.is_none()
+            && self.protected_data_mode.is_none()
     }
 }
 

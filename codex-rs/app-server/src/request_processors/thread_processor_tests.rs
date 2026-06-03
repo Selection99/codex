@@ -416,6 +416,7 @@ mod thread_processor_behavior_tests {
             permission_profile: PermissionProfile::read_only(),
             token_usage: None,
             first_user_message: Some("first user message".to_string()),
+            protected_data_mode: Default::default(),
             history: None,
         };
 

@@ -37,12 +37,14 @@ use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ProtectedDataModeState;
 use codex_protocol::protocol::RealtimeConversationListVoicesResponseEvent;
 use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_protocol::protocol::ThreadProtectedDataModeUpdatedEvent;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
@@ -623,6 +625,93 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
     }
 }
 
+pub(super) async fn persist_protected_data_mode_update(
+    sess: &Session,
+    state: ProtectedDataModeState,
+) -> anyhow::Result<()> {
+    let Some(live_thread) = sess.live_thread() else {
+        return Ok(());
+    };
+    live_thread.persist().await?;
+    live_thread.flush().await?;
+    live_thread
+        .update_protected_data_mode(state, /*include_archived*/ false)
+        .await?;
+    live_thread.flush().await?;
+    Ok(())
+}
+
+pub(crate) async fn merge_protected_data_mode(
+    sess: &Session,
+    state: ProtectedDataModeState,
+) -> anyhow::Result<()> {
+    if !state.active {
+        return Ok(());
+    }
+    let previous = sess.protected_data_mode.lock().await.clone();
+    let mut updated = previous.clone();
+    updated.merge(state);
+    if updated == previous {
+        return Ok(());
+    }
+    persist_protected_data_mode_update(sess, updated.clone()).await?;
+    *sess.protected_data_mode.lock().await = updated.clone();
+    sess.send_event_raw(Event {
+        id: sess.next_internal_sub_id(),
+        msg: EventMsg::ThreadProtectedDataModeUpdated(ThreadProtectedDataModeUpdatedEvent {
+            thread_id: sess.thread_id,
+            state: updated,
+        }),
+    })
+    .await;
+    Ok(())
+}
+
+pub async fn exit_protected_data_mode(sess: &Arc<Session>, sub_id: String) {
+    let exit_policy = sess
+        .services
+        .protected_data_mode_exit_policy
+        .read()
+        .await
+        .clone();
+    let allowed = exit_policy.can_exit(sess.thread_id).await;
+    let result = match allowed {
+        Ok(true) => {
+            let state = ProtectedDataModeState::default();
+            persist_protected_data_mode_update(sess, state.clone())
+                .await
+                .map(|()| state)
+        }
+        Ok(false) => Err(anyhow::anyhow!("protected data mode exit is not allowed")),
+        Err(err) => Err(err),
+    };
+    match result {
+        Ok(state) => {
+            *sess.protected_data_mode.lock().await = state.clone();
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::ThreadProtectedDataModeUpdated(
+                    ThreadProtectedDataModeUpdatedEvent {
+                        thread_id: sess.thread_id,
+                        state,
+                    },
+                ),
+            })
+            .await;
+        }
+        Err(err) => {
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: err.to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            })
+            .await;
+        }
+    }
+}
+
 async fn shutdown_session_runtime(sess: &Arc<Session>) {
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
     let _ = sess.conversation.shutdown().await;
@@ -841,6 +930,10 @@ pub(super) async fn submission_loop(
                 }
                 Op::SetThreadMemoryMode { mode } => {
                     set_thread_memory_mode(&sess, sub.id.clone(), mode).await;
+                    false
+                }
+                Op::ExitProtectedDataMode => {
+                    exit_protected_data_mode(&sess, sub.id.clone()).await;
                     false
                 }
                 Op::RunUserShellCommand { command } => {

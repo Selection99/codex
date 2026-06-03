@@ -148,6 +148,7 @@ pub(super) fn stored_thread_from_rollout_item(
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,
         first_user_message: item.first_user_message,
+        protected_data_mode: Default::default(),
         history: None,
     })
 }

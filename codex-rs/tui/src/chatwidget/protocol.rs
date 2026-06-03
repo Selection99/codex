@@ -54,6 +54,16 @@ impl ChatWidget {
             ServerNotification::ThreadSettingsUpdated(notification) => {
                 self.on_thread_settings_updated(notification);
             }
+            ServerNotification::ThreadProtectedDataModeUpdated(notification) => {
+                if notification.state.active {
+                    self.on_warning("Protected data mode is active for this thread.".to_string());
+                } else {
+                    self.add_info_message(
+                        "Protected data mode is no longer active for this thread.".to_string(),
+                        None,
+                    );
+                }
+            }
             ServerNotification::TurnStarted(notification) => {
                 self.turn_lifecycle.last_turn_id = Some(notification.turn.id);
                 self.last_non_retry_error = None;

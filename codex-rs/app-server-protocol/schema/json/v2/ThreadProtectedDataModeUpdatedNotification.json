@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ProtectedDataModeState": {
+      "properties": {
+        "active": {
+          "default": false,
+          "type": "boolean"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "state": {
+      "$ref": "#/definitions/ProtectedDataModeState"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "state",
+    "threadId"
+  ],
+  "title": "ThreadProtectedDataModeUpdatedNotification",
+  "type": "object"
+}

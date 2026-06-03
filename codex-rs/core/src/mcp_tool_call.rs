@@ -371,6 +371,14 @@ async fn handle_approved_mcp_tool_call(
     if let Err(error) = &result {
         tracing::warn!("MCP tool call error: {error:?}");
     }
+    if let Some(state) = result
+        .as_ref()
+        .ok()
+        .and_then(CallToolResult::protected_data_mode_state)
+        && let Err(err) = crate::session::merge_protected_data_mode(sess, state).await
+    {
+        tracing::warn!("Failed to persist protected data mode state: {err}");
+    }
     let duration = start.elapsed();
     notify_mcp_tool_call_completed(
         sess,

@@ -907,6 +907,7 @@ mod tests {
             thread_source: None,
             git_info: None,
             name: None,
+            protected_data_mode: Default::default(),
             turns: Vec::new(),
         }
     }

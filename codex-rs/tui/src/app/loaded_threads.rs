@@ -136,6 +136,7 @@ mod tests {
             agent_role: None,
             git_info: None,
             name: None,
+            protected_data_mode: Default::default(),
             turns: Vec::new(),
         }
     }

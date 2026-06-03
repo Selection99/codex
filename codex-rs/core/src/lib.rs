@@ -66,6 +66,8 @@ pub use mention_syntax::TOOL_MENTION_SIGIL;
 pub use utils::path_utils;
 pub mod personality_migration;
 pub(crate) mod plugins;
+mod protected_data_mode;
+pub use protected_data_mode::ProtectedDataModeExitPolicy;
 #[doc(hidden)]
 pub(crate) mod prompt_debug;
 #[doc(hidden)]

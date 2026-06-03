@@ -637,6 +637,11 @@ pub enum Op {
     /// model.
     SetThreadMemoryMode { mode: ThreadMemoryMode },
 
+    /// Request to leave protected data mode for the active thread.
+    ///
+    /// The core exit policy decides whether this is allowed.
+    ExitProtectedDataMode,
+
     /// Request Codex to drop the last N user turns from in-memory context.
     ///
     /// This does not attempt to revert local filesystem changes. Clients are
@@ -668,6 +673,35 @@ pub enum Op {
 pub enum ThreadMemoryMode {
     Enabled,
     Disabled,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedDataModeState {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<String>,
+}
+
+impl ProtectedDataModeState {
+    pub fn merge(&mut self, next: Self) {
+        if !next.active {
+            return;
+        }
+        self.active = true;
+        for category in next.categories {
+            if !self.categories.contains(&category) {
+                self.categories.push(category);
+            }
+        }
+        if next.reason.is_some() {
+            self.reason = next.reason;
+        }
+    }
 }
 
 impl From<Vec<UserInput>> for Op {
@@ -757,6 +791,7 @@ impl Op {
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
+            Self::ExitProtectedDataMode => "exit_protected_data_mode",
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1191,6 +1226,9 @@ pub enum EventMsg {
 
     /// Conversation history was rolled back by dropping the last N user turns.
     ThreadRolledBack(ThreadRolledBackEvent),
+
+    /// Protected data mode state changed for this thread.
+    ThreadProtectedDataModeUpdated(ThreadProtectedDataModeUpdatedEvent),
 
     /// Agent has started a turn.
     /// v1 wire format uses `task_started`; accept `turn_started` for v2 interop.
@@ -2462,6 +2500,18 @@ impl InitialHistory {
         }
     }
 
+    pub fn get_protected_data_mode_state(&self) -> Option<ProtectedDataModeState> {
+        let items = match self {
+            InitialHistory::New | InitialHistory::Cleared => return None,
+            InitialHistory::Resumed(resumed) => &resumed.history,
+            InitialHistory::Forked(items) => items,
+        };
+        items.iter().rev().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => meta_line.meta.protected_data_mode.clone(),
+            _ => None,
+        })
+    }
+
     pub fn get_resumed_session_sources(&self) -> Option<(SessionSource, Option<ThreadSource>)> {
         let meta = self.get_resumed_session_meta()?;
         Some((meta.source.clone(), meta.thread_source))
@@ -2804,6 +2854,8 @@ pub struct SessionMeta {
     pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_data_mode: Option<ProtectedDataModeState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_version: Option<MultiAgentVersion>,
 }
@@ -2827,6 +2879,7 @@ impl Default for SessionMeta {
             base_instructions: None,
             dynamic_tools: None,
             memory_mode: None,
+            protected_data_mode: None,
             multi_agent_version: None,
         }
     }
@@ -3239,6 +3292,13 @@ pub struct DeprecationNoticeEvent {
 pub struct ThreadRolledBackEvent {
     /// Number of user turns that were removed from context.
     pub num_turns: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadProtectedDataModeUpdatedEvent {
+    pub thread_id: ThreadId,
+    pub state: ProtectedDataModeState,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -4041,6 +4101,30 @@ mod tests {
             .get_writable_roots_with_cwd(cwd)
             .iter()
             .any(|root| root.is_path_writable(path))
+    }
+
+    #[test]
+    fn protected_data_mode_merge_accumulates_unique_categories_and_latest_reason() {
+        let mut state = ProtectedDataModeState {
+            active: true,
+            categories: vec!["identity".to_string()],
+            reason: Some("first result".to_string()),
+        };
+
+        state.merge(ProtectedDataModeState {
+            active: true,
+            categories: vec!["identity".to_string(), "financial".to_string()],
+            reason: Some("ledger result".to_string()),
+        });
+
+        assert_eq!(
+            state,
+            ProtectedDataModeState {
+                active: true,
+                categories: vec!["identity".to_string(), "financial".to_string()],
+                reason: Some("ledger result".to_string()),
+            }
+        );
     }
 
     #[test]

@@ -31,7 +31,8 @@ SELECT
     threads.archived_at,
     threads.git_sha,
     threads.git_branch,
-    threads.git_origin_url
+    threads.git_origin_url,
+    threads.protected_data_mode
 FROM threads
 WHERE threads.id = ?
             "#,
@@ -49,6 +50,19 @@ WHERE threads.id = ?
             .fetch_optional(self.pool.as_ref())
             .await?;
         Ok(row.and_then(|row| row.try_get("memory_mode").ok()))
+    }
+
+    pub async fn set_thread_protected_data_mode(
+        &self,
+        thread_id: ThreadId,
+        state: &codex_protocol::protocol::ProtectedDataModeState,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET protected_data_mode = ? WHERE id = ?")
+            .bind(serde_json::to_string(state)?)
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn set_thread_preview_if_empty(
@@ -506,8 +520,9 @@ INSERT INTO threads (
     git_sha,
     git_branch,
     git_origin_url,
-    memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    memory_mode,
+    protected_data_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -548,6 +563,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.git_branch.as_deref())
         .bind(metadata.git_origin_url.as_deref())
         .bind("enabled")
+        .bind(serde_json::to_string(&metadata.protected_data_mode)?)
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
@@ -712,8 +728,9 @@ INSERT INTO threads (
     git_sha,
     git_branch,
     git_origin_url,
-    memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    memory_mode,
+    protected_data_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -740,7 +757,8 @@ ON CONFLICT(id) DO UPDATE SET
     archived_at = excluded.archived_at,
     git_sha = COALESCE(threads.git_sha, excluded.git_sha),
     git_branch = COALESCE(threads.git_branch, excluded.git_branch),
-    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url)
+    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url),
+    protected_data_mode = excluded.protected_data_mode
             "#,
         )
         .bind(metadata.id.to_string())
@@ -780,6 +798,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.git_branch.as_deref())
         .bind(metadata.git_origin_url.as_deref())
         .bind(creation_memory_mode.unwrap_or("enabled"))
+        .bind(serde_json::to_string(&metadata.protected_data_mode)?)
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
@@ -942,7 +961,8 @@ SELECT
     threads.archived_at,
     threads.git_sha,
     threads.git_branch,
-    threads.git_origin_url
+    threads.git_origin_url,
+    threads.protected_data_mode
 "#,
     );
 }

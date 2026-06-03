@@ -8,6 +8,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::protocol::ProtectedDataModeState;
+
+pub const PROTECTED_DATA_MODE_META_KEY: &str = "openai/protected_data_mode";
+
 /// ID of a request, which can be either a string or an integer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(untagged)]
@@ -160,6 +164,13 @@ pub struct CallToolResult {
     #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub meta: Option<serde_json::Value>,
+}
+
+impl CallToolResult {
+    pub fn protected_data_mode_state(&self) -> Option<ProtectedDataModeState> {
+        let value = self.meta.as_ref()?.get(PROTECTED_DATA_MODE_META_KEY)?;
+        serde_json::from_value(value.clone()).ok()
+    }
 }
 
 // === Adapter helpers ===
@@ -368,5 +379,47 @@ mod tests {
 
         let parsed = Resource::from_mcp_value(resource).expect("should deserialize");
         assert_eq!(parsed.size, None);
+    }
+
+    #[test]
+    fn call_tool_result_extracts_protected_data_mode_metadata() {
+        let result = CallToolResult {
+            content: Vec::new(),
+            structured_content: None,
+            is_error: None,
+            meta: Some(serde_json::json!({
+                PROTECTED_DATA_MODE_META_KEY: {
+                    "active": true,
+                    "categories": ["financial", "identity"],
+                    "reason": "ledger result",
+                    "futureField": "ignored",
+                },
+            })),
+        };
+
+        assert_eq!(
+            result.protected_data_mode_state(),
+            Some(ProtectedDataModeState {
+                active: true,
+                categories: vec!["financial".to_string(), "identity".to_string()],
+                reason: Some("ledger result".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn call_tool_result_ignores_invalid_protected_data_mode_metadata() {
+        let result = CallToolResult {
+            content: Vec::new(),
+            structured_content: None,
+            is_error: None,
+            meta: Some(serde_json::json!({
+                PROTECTED_DATA_MODE_META_KEY: {
+                    "active": "yes",
+                },
+            })),
+        };
+
+        assert_eq!(result.protected_data_mode_state(), None);
     }
 }

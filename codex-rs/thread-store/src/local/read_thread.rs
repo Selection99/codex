@@ -2,6 +2,8 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ProtectedDataModeState;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::RolloutRecorder;
@@ -270,6 +272,9 @@ async fn read_thread_from_rollout_path(
             thread.model_provider = model_provider;
         }
     }
+    if let Some(state) = latest_protected_data_mode_state(path.as_path()).await {
+        thread.protected_data_mode = state;
+    }
     if let Ok(Some(title)) =
         find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
     {
@@ -287,6 +292,20 @@ async fn load_history_items(
             message: format!("failed to load thread history {}: {err}", path.display()),
         })?;
     Ok(items)
+}
+
+async fn latest_protected_data_mode_state(
+    path: &std::path::Path,
+) -> Option<ProtectedDataModeState> {
+    load_history_items(path)
+        .await
+        .ok()?
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => meta_line.meta.protected_data_mode,
+            _ => None,
+        })
 }
 
 async fn read_sqlite_metadata(
@@ -356,6 +375,7 @@ async fn stored_thread_from_sqlite_metadata(
         permission_profile,
         token_usage: None,
         first_user_message: metadata.first_user_message,
+        protected_data_mode: metadata.protected_data_mode,
         history: None,
     }
 }
@@ -370,9 +390,11 @@ async fn stored_thread_from_session_meta(
             message: format!("failed to read thread {}: {err}", path.display()),
         })?;
     let archived = rollout_path_is_archived(store.config.codex_home.as_path(), path.as_path());
-    Ok(stored_thread_from_meta_line(
-        store, meta_line, path, archived,
-    ))
+    let mut thread = stored_thread_from_meta_line(store, meta_line, path.clone(), archived);
+    if let Some(state) = latest_protected_data_mode_state(path.as_path()).await {
+        thread.protected_data_mode = state;
+    }
+    Ok(thread)
 }
 
 fn stored_thread_from_meta_line(
@@ -417,6 +439,7 @@ fn stored_thread_from_meta_line(
         permission_profile: PermissionProfile::read_only(),
         token_usage: None,
         first_user_message: None,
+        protected_data_mode: meta_line.meta.protected_data_mode.unwrap_or_default(),
         history: None,
     }
 }

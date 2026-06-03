@@ -52,6 +52,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadProtectedDataModeUpdatedNotification;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 use codex_app_server_protocol::ThreadRealtimeItemAddedNotification;
@@ -1191,6 +1192,16 @@ pub(crate) async fn apply_bespoke_event_handling(
                 outgoing.send_response(request_id, response).await;
             }
         }
+        EventMsg::ThreadProtectedDataModeUpdated(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadProtectedDataModeUpdated(
+                    ThreadProtectedDataModeUpdatedNotification {
+                        thread_id: event.thread_id.to_string(),
+                        state: event.state.clone(),
+                    },
+                ))
+                .await;
+        }
         EventMsg::ThreadGoalUpdated(thread_goal_event) => {
             let notification = ThreadGoalUpdatedNotification {
                 thread_id: thread_goal_event.thread_id.to_string(),
@@ -2192,6 +2203,7 @@ mod tests {
             permission_profile: PermissionProfile::read_only(),
             token_usage: None,
             first_user_message: Some("before rollback".to_string()),
+            protected_data_mode: Default::default(),
             history: Some(StoredThreadHistory {
                 thread_id,
                 items: history_items,

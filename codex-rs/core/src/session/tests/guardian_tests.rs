@@ -734,6 +734,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         analytics_events_client: None,
         thread_store,
         attestation_provider: None,
+        protected_data_mode_exit_policy: crate::protected_data_mode::default_exit_policy(),
         inherited_multi_agent_version: None,
     })
     .await

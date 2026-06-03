@@ -3555,6 +3555,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
                 } else {
                     ThreadMemoryMode::Disabled
                 },
+                protected_data_mode: Default::default(),
             },
         },
     )
@@ -4605,6 +4606,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         )),
         codex_rollout_trace::ThreadTraceContext::disabled(),
         /*attestation_provider*/ None,
+        crate::protected_data_mode::default_exit_policy(),
         Some(config.multi_agent_version_from_features()),
     )
     .await;
@@ -4764,6 +4766,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             /*state_db*/ None,
         )),
         attestation_provider: None,
+        protected_data_mode_exit_policy: crate::protected_data_mode::default_exit_policy(),
         model_client: ModelClient::new(
             Some(auth_manager.clone()),
             thread_id.into(),
@@ -4826,6 +4829,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
         state: Mutex::new(state),
+        protected_data_mode: Mutex::new(Default::default()),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
@@ -4955,6 +4959,7 @@ async fn make_session_with_config_and_rx(
         )),
         codex_rollout_trace::ThreadTraceContext::disabled(),
         /*attestation_provider*/ None,
+        crate::protected_data_mode::default_exit_policy(),
         Some(config.multi_agent_version_from_features()),
     )
     .await?;
@@ -5067,6 +5072,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         )),
         codex_rollout_trace::ThreadTraceContext::disabled(),
         /*attestation_provider*/ None,
+        crate::protected_data_mode::default_exit_policy(),
         Some(config.multi_agent_version_from_features()),
     )
     .await?;
@@ -6298,6 +6304,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
                 } else {
                     ThreadMemoryMode::Disabled
                 },
+                protected_data_mode: Default::default(),
             },
         },
     )
@@ -6854,6 +6861,7 @@ where
             state_db,
         )),
         attestation_provider: None,
+        protected_data_mode_exit_policy: crate::protected_data_mode::default_exit_policy(),
         model_client: ModelClient::new(
             Some(Arc::clone(&auth_manager)),
             thread_id.into(),
@@ -6916,6 +6924,7 @@ where
         agent_status: agent_status_tx,
         out_of_band_elicitation_paused: watch::channel(false).0,
         state: Mutex::new(state),
+        protected_data_mode: Mutex::new(Default::default()),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),

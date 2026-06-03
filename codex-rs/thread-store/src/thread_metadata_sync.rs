@@ -74,6 +74,7 @@ impl ThreadMetadataSync {
             cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             git_info: git_info.map(git_info_patch_from_observation),
             memory_mode: Some(params.metadata.memory_mode),
+            protected_data_mode: Some(params.metadata.protected_data_mode.clone()),
             ..Default::default()
         };
         Self {
@@ -225,6 +226,9 @@ impl ThreadMetadataSync {
                     {
                         update.memory_mode = Some(memory_mode);
                     }
+                    if let Some(state) = meta_line.meta.protected_data_mode.clone() {
+                        update.protected_data_mode = Some(state);
+                    }
                 }
                 RolloutItem::TurnContext(turn_ctx) => {
                     if !self.cwd_seen && !turn_ctx.cwd.as_os_str().is_empty() {
@@ -359,6 +363,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.first_user_message.is_some()
         || update.git_info.is_some()
         || update.memory_mode.is_some()
+        || update.protected_data_mode.is_some()
 }
 
 fn git_info_patch_from_observation(git_info: GitInfo) -> GitInfoPatch {
@@ -527,6 +532,7 @@ mod tests {
                 cwd: None,
                 model_provider: "test-provider".to_string(),
                 memory_mode: ThreadMemoryMode::Enabled,
+                protected_data_mode: Default::default(),
             },
         }
     }

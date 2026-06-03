@@ -3786,8 +3786,8 @@
         "environmentId": {
           "default": null,
           "type": [
-            "null",
-            "string"
+            "string",
+            "null"
           ]
         },
         "itemId": {
@@ -4196,6 +4196,26 @@
             "params"
           ],
           "title": "Thread/tokenUsage/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/protectedDataMode/updated"
+              ],
+              "title": "Thread/protectedDataMode/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadProtectedDataModeUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/protectedDataMode/updatedNotification",
           "type": "object"
         },
         {
@@ -13323,6 +13343,27 @@
         ],
         "type": "object"
       },
+      "ProtectedDataModeState": {
+        "properties": {
+          "active": {
+            "default": false,
+            "type": "boolean"
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "RateLimitReachedType": {
         "enum": [
           "rate_limit_reached",
@@ -15584,6 +15625,14 @@
             "description": "Usually the first user message in the thread, if available.",
             "type": "string"
           },
+          "protectedDataMode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/ProtectedDataModeState"
+              }
+            ],
+            "description": "Protected data mode state for this thread."
+          },
           "sessionId": {
             "description": "Session id shared by threads that belong to the same session tree.",
             "type": "string"
@@ -15636,6 +15685,7 @@
           "id",
           "modelProvider",
           "preview",
+          "protectedDataMode",
           "sessionId",
           "source",
           "status",
@@ -17077,6 +17127,23 @@
           "threadId"
         ],
         "title": "ThreadNameUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadProtectedDataModeUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "state": {
+            "$ref": "#/definitions/v2/ProtectedDataModeState"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "threadId"
+        ],
+        "title": "ThreadProtectedDataModeUpdatedNotification",
         "type": "object"
       },
       "ThreadReadParams": {
