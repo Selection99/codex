@@ -578,13 +578,11 @@ fn apply_proxy_env_overrides(
             if env
                 .get(key)
                 .filter(|value| !value.is_empty())
-                .is_some_and(|value| {
-                    value != &managed_path
-                        && mitm_ca_trust_bundle.startup_env_values.get(key) != Some(value)
-                })
+                .is_some_and(|value| value != &managed_path)
             {
-                // Child-scoped overrides need the effective filesystem policy before we can
-                // combine them with the managed CA bundle, so leave them for prepare_child_env().
+                // Child-scoped overrides, including inherited startup values, need the
+                // effective filesystem policy before we can combine them with the managed CA
+                // bundle, so leave them for prepare_child_env().
                 continue;
             }
             env.insert(key.to_string(), managed_path.clone());
@@ -1161,6 +1159,38 @@ mod tests {
                 Some(&mitm_ca_trust_bundle_path.display().to_string())
             );
         }
+    }
+
+    #[test]
+    fn apply_proxy_env_overrides_preserves_startup_mitm_ca_override() {
+        let startup_ca_bundle_path = "/tmp/startup-ca.pem".to_string();
+        let mut env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            startup_ca_bundle_path.clone(),
+        )]);
+        let mitm_ca_trust_bundle_path = Path::new("/tmp/codex-proxy/ca-bundle.pem");
+        let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: mitm_ca_trust_bundle_path.to_path_buf(),
+            startup_env_values: HashMap::from([(
+                "REQUESTS_CA_BUNDLE",
+                startup_ca_bundle_path.clone(),
+            )]),
+            startup_cwd: Path::new("/tmp").to_path_buf(),
+        };
+        apply_proxy_env_overrides(
+            &mut env,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3128),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8081),
+            /*socks_enabled*/ true,
+            /*allow_local_binding*/ false,
+            Some(&mitm_ca_trust_bundle),
+        );
+
+        assert_eq!(env.get("REQUESTS_CA_BUNDLE"), Some(&startup_ca_bundle_path));
+        assert_eq!(
+            env.get("SSL_CERT_FILE"),
+            Some(&mitm_ca_trust_bundle_path.display().to_string())
+        );
     }
 
     #[test]

@@ -90,13 +90,14 @@ pub fn prepare_managed_network_child(
 ) -> PermissionProfile {
     let managed_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
         let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
-        let read_deny_matcher = ReadDenyMatcher::new(&file_system_sandbox_policy, command_cwd);
+        let read_deny_matcher =
+            ReadDenyMatcher::new(&file_system_sandbox_policy, sandbox_policy_cwd);
         network.prepare_child_env(env, command_cwd, |path| {
             can_read_path_with_policy(
                 &file_system_sandbox_policy,
                 read_deny_matcher.as_ref(),
                 path,
-                command_cwd,
+                sandbox_policy_cwd,
             )
         })
     });

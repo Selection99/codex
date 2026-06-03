@@ -38,8 +38,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::LazyLock;
-use std::sync::Mutex;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tracing::info;
@@ -114,8 +112,6 @@ const MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX: &str = "ca-bundle";
 const MAX_CUSTOM_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 const SSL_CERT_FILE_ENV_KEY: &str = "SSL_CERT_FILE";
 pub(crate) const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
-const NATIVE_CA_ENV_KEYS: [&str; 2] = [SSL_CERT_FILE_ENV_KEY, SSL_CERT_DIR_ENV_KEY];
-static NATIVE_CA_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 // Best-effort compatibility set for common child toolchains that accept a CA bundle path.
 // This is intentionally curated rather than pretending to cover every TLS client.
@@ -185,7 +181,8 @@ fn managed_ca_trust_bundle_for_cert_path(
 
 fn build_managed_ca_trust_bundle(managed_ca_cert_path: &Path) -> Result<String> {
     let mut trust_bundle = String::new();
-    let rustls_native_certs::CertificateResult { certs, errors, .. } = load_platform_native_certs();
+    let rustls_native_certs::CertificateResult { certs, errors, .. } =
+        crate::native_certs::load_platform_native_certs();
     if !errors.is_empty() {
         warn!(
             native_root_error_count = errors.len(),
@@ -453,47 +450,6 @@ fn is_ca_dir_hash_file_name(file_name: &OsStr) -> bool {
     chars.by_ref().take(8).all(|c| c.is_ascii_hexdigit())
         && chars.next() == Some('.')
         && matches!(chars.next(), Some(c) if c.is_ascii_digit())
-}
-
-fn load_platform_native_certs() -> rustls_native_certs::CertificateResult {
-    let _guard = NATIVE_CA_ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _env_guard = NativeCaEnvGuard::new();
-    rustls_native_certs::load_native_certs()
-}
-
-struct NativeCaEnvGuard {
-    original_values: [(&'static str, Option<std::ffi::OsString>); NATIVE_CA_ENV_KEYS.len()],
-}
-
-impl NativeCaEnvGuard {
-    fn new() -> Self {
-        let original_values = NATIVE_CA_ENV_KEYS.map(|key| (key, std::env::var_os(key)));
-        for key in NATIVE_CA_ENV_KEYS {
-            // SAFETY: Native CA env mutation is serialized by native_ca_env_lock and restored
-            // before releasing the lock, so rustls-native-certs sees a stable no-override env.
-            unsafe { std::env::remove_var(key) };
-        }
-        Self { original_values }
-    }
-}
-
-impl Drop for NativeCaEnvGuard {
-    fn drop(&mut self) {
-        for (key, value) in &self.original_values {
-            match value {
-                Some(value) => {
-                    // SAFETY: See NativeCaEnvGuard::new; restore happens under the same lock.
-                    unsafe { std::env::set_var(key, value) };
-                }
-                None => {
-                    // SAFETY: See NativeCaEnvGuard::new; restore happens under the same lock.
-                    unsafe { std::env::remove_var(key) };
-                }
-            }
-        }
-    }
 }
 
 fn open_readonly_without_following_symlink(path: &Path) -> Result<File> {

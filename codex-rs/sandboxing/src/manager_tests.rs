@@ -288,32 +288,40 @@ fn managed_mitm_ca_bundle_becomes_readable_for_restricted_sandbox() {
 }
 
 #[test]
-fn managed_mitm_ca_materialization_rejects_glob_denied_paths() {
-    let cwd = TempDir::new().expect("create cwd");
-    let cwd =
-        AbsolutePathBuf::from_absolute_path(canonicalize(cwd.path()).expect("canonicalize cwd"))
-            .expect("absolute cwd");
-    let ca_bundle_path = cwd.join("blocked.pem");
+fn managed_mitm_ca_materialization_rejects_glob_denied_paths_from_command_subdir() {
+    let sandbox_policy_cwd = TempDir::new().expect("create cwd");
+    let sandbox_policy_cwd = AbsolutePathBuf::from_absolute_path(
+        canonicalize(sandbox_policy_cwd.path()).expect("canonicalize cwd"),
+    )
+    .expect("absolute cwd");
+    let command_cwd = sandbox_policy_cwd.join("subdir");
+    std::fs::create_dir(command_cwd.as_path()).expect("create command cwd");
+    let ca_bundle_path = command_cwd.join("../secrets/blocked.pem");
+    std::fs::create_dir(sandbox_policy_cwd.join("secrets").as_path()).expect("create secrets");
+    std::fs::write(ca_bundle_path.as_path(), "secret").expect("write blocked CA bundle");
     let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: cwd.clone() },
+            path: FileSystemPath::Path {
+                path: sandbox_policy_cwd.clone(),
+            },
             access: FileSystemAccessMode::Read,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::GlobPattern {
-                pattern: format!("{}/blocked.pem", cwd.as_path().display()),
+                pattern: "secrets/**".to_string(),
             },
             access: FileSystemAccessMode::Deny,
         },
     ]);
     let read_deny_matcher =
-        ReadDenyMatcher::new(&file_system_sandbox_policy, cwd.as_path()).expect("deny matcher");
+        ReadDenyMatcher::new(&file_system_sandbox_policy, sandbox_policy_cwd.as_path())
+            .expect("deny matcher");
 
     assert!(!can_read_path_with_policy(
         &file_system_sandbox_policy,
         Some(&read_deny_matcher),
         ca_bundle_path.as_path(),
-        cwd.as_path(),
+        sandbox_policy_cwd.as_path(),
     ));
 }
 
