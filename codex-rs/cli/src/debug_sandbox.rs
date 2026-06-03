@@ -19,12 +19,11 @@ use codex_protocol::config_types::SandboxMode;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_sandboxing::landlock::allow_network_for_proxy;
 use codex_sandboxing::landlock::create_linux_sandbox_command_args_for_permission_profile;
-use codex_sandboxing::prepare_managed_network_child_env;
+use codex_sandboxing::prepare_managed_network_child;
 #[cfg(target_os = "macos")]
 use codex_sandboxing::seatbelt::CreateSeatbeltCommandArgsParams;
 #[cfg(target_os = "macos")]
 use codex_sandboxing::seatbelt::create_seatbelt_command_args;
-use codex_sandboxing::with_managed_mitm_ca_readable_roots;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use tokio::process::Child;
@@ -259,16 +258,11 @@ async fn run_command_under_sandbox(
     let network = network_proxy
         .as_ref()
         .map(codex_core::config::StartedNetworkProxy::proxy);
-    let runtime_permission_profile = config.permissions.effective_permission_profile();
-    let managed_mitm_ca_trust_bundle_paths = prepare_managed_network_child_env(
+    let runtime_permission_profile = prepare_managed_network_child(
         network.as_ref(),
         &mut env,
         cwd.as_path(),
-        &runtime_permission_profile,
-    );
-    let runtime_permission_profile = with_managed_mitm_ca_readable_roots(
-        runtime_permission_profile,
-        &managed_mitm_ca_trust_bundle_paths,
+        config.permissions.effective_permission_profile(),
         sandbox_policy_cwd.as_path(),
     );
 

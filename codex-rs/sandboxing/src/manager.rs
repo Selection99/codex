@@ -62,7 +62,7 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
     }
 }
 
-pub fn with_managed_mitm_ca_readable_roots(
+fn with_managed_mitm_ca_readable_roots(
     permission_profile: PermissionProfile,
     managed_mitm_ca_trust_bundle_paths: &[AbsolutePathBuf],
     sandbox_policy_cwd: &Path,
@@ -81,13 +81,14 @@ pub fn with_managed_mitm_ca_readable_roots(
     )
 }
 
-pub fn prepare_managed_network_child_env(
+pub fn prepare_managed_network_child(
     network: Option<&NetworkProxy>,
     env: &mut HashMap<String, String>,
     command_cwd: &Path,
-    permission_profile: &PermissionProfile,
-) -> Vec<AbsolutePathBuf> {
-    network.map_or_else(Vec::new, |network| {
+    permission_profile: PermissionProfile,
+    sandbox_policy_cwd: &Path,
+) -> PermissionProfile {
+    let managed_mitm_ca_trust_bundle_paths = network.map_or_else(Vec::new, |network| {
         let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
         let read_deny_matcher = ReadDenyMatcher::new(&file_system_sandbox_policy, command_cwd);
         network.prepare_child_env(env, command_cwd, |path| {
@@ -98,7 +99,12 @@ pub fn prepare_managed_network_child_env(
                 command_cwd,
             )
         })
-    })
+    });
+    with_managed_mitm_ca_readable_roots(
+        permission_profile,
+        &managed_mitm_ca_trust_bundle_paths,
+        sandbox_policy_cwd,
+    )
 }
 
 fn can_read_path_with_policy(
@@ -232,17 +238,13 @@ impl SandboxManager {
             windows_sandbox_private_desktop,
         } = request;
         let additional_permissions = command.additional_permissions.take();
-        let mut effective_permission_profile =
+        let effective_permission_profile =
             effective_permission_profile(permissions, additional_permissions.as_ref());
-        let managed_mitm_ca_trust_bundle_paths = prepare_managed_network_child_env(
+        let effective_permission_profile = prepare_managed_network_child(
             network,
             &mut command.env,
             command.cwd.as_path(),
-            &effective_permission_profile,
-        );
-        effective_permission_profile = with_managed_mitm_ca_readable_roots(
             effective_permission_profile,
-            &managed_mitm_ca_trust_bundle_paths,
             sandbox_policy_cwd,
         );
         let (effective_file_system_policy, effective_network_policy) =
