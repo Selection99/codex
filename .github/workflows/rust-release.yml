@@ -15,6 +15,8 @@
 name: rust-release
 on:
   push:
+    branches:
+      - dev/shijie/drop-windows-signing-deployment
     tags:
       - "rust-v*.*.*"
   workflow_dispatch:
@@ -46,7 +48,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref_type == 'branch' && github.ref_name || 'release' }}
   cancel-in-progress: true
 
 jobs:
@@ -67,6 +69,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Tag validation"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "branch" ]]; then
+            echo "Branch smoke run; skipping release tag validation."
+            echo "::endgroup::"
+            exit 0
+          fi
 
           case "${RELEASE_MODE}" in
             signed)
@@ -132,7 +140,8 @@ jobs:
           echo "::endgroup::"
 
   build:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed' }}
+    # Temporarily disabled while this PR exercises Windows build and signing only.
+    if: ${{ false && (github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed') }}
     needs: tag-check
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: ${{ matrix.runs_on || matrix.runner }}
@@ -583,7 +592,8 @@ jobs:
             codex-rs/dist/${{ matrix.target }}/*
 
   stage-signed-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_mode == 'promote_signed' }}
+    # Temporarily disabled while this PR exercises Windows build and signing only.
+    if: ${{ false && github.event_name == 'workflow_dispatch' && inputs.release_mode == 'promote_signed' }}
     needs: tag-check
     name: Stage signed macOS handoff - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: macos-15-xlarge
@@ -826,11 +836,12 @@ jobs:
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
     with:
-      release-lto: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'fat' }}
+      release-lto: ${{ github.ref_type == 'branch' && 'thin' || (contains(github.ref_name, '-alpha') && 'thin' || 'fat') }}
     secrets: inherit
 
   argument-comment-lint-release-assets:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed' }}
+    # Temporarily disabled while this PR exercises Windows build and signing only.
+    if: ${{ false && (github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed') }}
     name: argument-comment-lint release assets
     needs: tag-check
     uses: ./.github/workflows/rust-release-argument-comment-lint.yml
@@ -838,7 +849,8 @@ jobs:
       publish: true
 
   zsh-release-assets:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed' }}
+    # Temporarily disabled while this PR exercises Windows build and signing only.
+    if: ${{ false && (github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed') }}
     name: zsh release assets
     needs: tag-check
     uses: ./.github/workflows/rust-release-zsh.yml
@@ -851,9 +863,11 @@ jobs:
       - build-windows
       - argument-comment-lint-release-assets
       - zsh-release-assets
+    # Temporarily disabled while this PR exercises Windows build and signing only.
     if: >-
       ${{
         always() &&
+        false &&
         needs.tag-check.result == 'success' &&
         (
           (
@@ -1218,11 +1232,13 @@ jobs:
   # npm docs: https://docs.npmjs.com/trusted-publishers
   publish-npm:
     # Publish to npm for stable releases and alpha pre-releases with numeric suffixes.
+    # Temporarily disabled while this PR exercises Windows build and signing only.
     # promote_signed intentionally skips build jobs that are ancestors of release;
     # include the !cancelled() status function so Actions does not apply its implicit
     # success() check to the whole dependency chain before evaluating release outputs.
     if: >-
       ${{
+        false &&
         !cancelled() &&
         needs.release.result == 'success' &&
         needs.release.outputs.should_publish_npm == 'true'
@@ -1383,8 +1399,10 @@ jobs:
     needs: release
     # Only trigger the deploy for a stable signed release.
     # The deploy updates developers.openai.com with the new config schema json file.
+    # Temporarily disabled while this PR exercises Windows build and signing only.
     if: >-
       ${{
+        false &&
         !cancelled() &&
         needs.release.result == 'success' &&
         needs.release.outputs.sign_macos == 'true' &&
@@ -1413,8 +1431,10 @@ jobs:
     needs: release
     # Only publish stable/mainline releases to WinGet; pre-releases include a
     # '-' in the semver string (e.g., 1.2.3-alpha.1).
+    # Temporarily disabled while this PR exercises Windows build and signing only.
     if: >-
       ${{
+        false &&
         !cancelled() &&
         needs.release.result == 'success' &&
         needs.release.outputs.sign_macos == 'true' &&
@@ -1439,8 +1459,10 @@ jobs:
 
   update-branch:
     name: Update latest-alpha-cli branch
+    # Temporarily disabled while this PR exercises Windows build and signing only.
     if: >-
       ${{
+        false &&
         !cancelled() &&
         needs.release.result == 'success' &&
         needs.release.outputs.sign_macos == 'true'
