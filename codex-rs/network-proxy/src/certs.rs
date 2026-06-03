@@ -348,12 +348,6 @@ where
         let entry = entry
             .with_context(|| format!("failed to read CA directory entry in {}", dir.display()))?;
         let path = entry.path();
-        let Some(file_name) = path.file_name() else {
-            continue;
-        };
-        if !is_ca_dir_hash_file_name(file_name) {
-            continue;
-        }
         match read_custom_ca_bundle(&path, &can_read_path) {
             Ok(contents) => append_bounded_pem_contents(&mut trust_bundle, &contents)?,
             Err(err) => {
@@ -425,20 +419,6 @@ fn append_bounded_pem_contents(bundle: &mut String, pem: &str) -> Result<()> {
     );
     append_pem_contents(bundle, pem);
     Ok(())
-}
-
-fn is_ca_dir_hash_file_name(file_name: &OsStr) -> bool {
-    let Some(file_name) = file_name.to_str() else {
-        return false;
-    };
-    if file_name.len() != 10 {
-        return false;
-    }
-
-    let mut chars = file_name.chars();
-    chars.by_ref().take(8).all(|c| c.is_ascii_hexdigit())
-        && chars.next() == Some('.')
-        && matches!(chars.next(), Some(c) if c.is_ascii_digit())
 }
 
 fn open_readonly_without_following_symlink(path: &Path) -> Result<File> {

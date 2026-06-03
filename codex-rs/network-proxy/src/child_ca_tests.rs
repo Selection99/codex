@@ -102,7 +102,7 @@ fn materializes_readable_ssl_cert_dir() {
     let ssl_cert_dir_paths = [dir.path().join("certs-a"), dir.path().join("certs-b")];
     for (path, contents) in ssl_cert_dir_paths.iter().zip(["dir ca a\n", "dir ca b\n"]) {
         fs::create_dir(path).unwrap();
-        fs::write(path.join("12345678.0"), contents).unwrap();
+        fs::write(path.join("ordinary-ca.pem"), contents).unwrap();
     }
     let mitm_ca_trust_bundle_path = dir.path().join("ca-bundle.pem");
     fs::write(&mitm_ca_trust_bundle_path, "managed ca\n").unwrap();
