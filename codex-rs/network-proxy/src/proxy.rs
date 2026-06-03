@@ -11,6 +11,7 @@ use anyhow::Result;
 use clap::Parser;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::path::Path;
@@ -309,6 +310,7 @@ impl NetworkProxyRuntimeSettings {
         let mitm_ca_trust_bundle = if config.network.mitm {
             let env = crate::certs::CUSTOM_CA_ENV_KEYS
                 .into_iter()
+                .chain(std::iter::once(crate::certs::SSL_CERT_DIR_ENV_KEY))
                 .filter_map(|key| std::env::var(key).ok().map(|value| (key, value)))
                 .collect();
             Some(crate::certs::managed_ca_trust_bundle(&env)?)
@@ -595,20 +597,32 @@ fn prepare_mitm_ca_trust_bundle_env<F>(
     mitm_ca_trust_bundle: &crate::certs::ManagedMitmCaTrustBundle,
     env: &mut HashMap<String, String>,
     cwd: &Path,
+    startup_ca_env_keys_present_in_child: &HashSet<&'static str>,
     can_read_path: F,
 ) -> Vec<AbsolutePathBuf>
 where
     F: Fn(&Path) -> bool,
 {
-    let ssl_cert_dir_contents =
-        read_child_ca_dir_contents(mitm_ca_trust_bundle, env, cwd, &can_read_path);
+    let ssl_cert_dir_contents = read_child_ca_dir_contents(
+        mitm_ca_trust_bundle,
+        env,
+        cwd,
+        startup_ca_env_keys_present_in_child,
+        &can_read_path,
+    );
     for key in crate::certs::CUSTOM_CA_ENV_KEYS {
         let Some(value) = env.get(key).filter(|value| !value.is_empty()) else {
             continue;
         };
-        let mut custom_ca_bundle =
-            read_child_ca_bundle_contents(mitm_ca_trust_bundle, key, value, cwd, &can_read_path)
-                .unwrap_or_default();
+        let mut custom_ca_bundle = read_child_ca_bundle_contents(
+            mitm_ca_trust_bundle,
+            key,
+            value,
+            cwd,
+            startup_ca_env_keys_present_in_child,
+            &can_read_path,
+        )
+        .unwrap_or_default();
         if key == "SSL_CERT_FILE"
             && let Some(ssl_cert_dir_contents) = ssl_cert_dir_contents.as_deref()
         {
@@ -651,6 +665,7 @@ fn read_child_ca_bundle_contents<F>(
     key: &'static str,
     value: &str,
     cwd: &Path,
+    startup_ca_env_keys_present_in_child: &HashSet<&'static str>,
     can_read_path: &F,
 ) -> Option<String>
 where
@@ -658,6 +673,9 @@ where
 {
     let value_path = Path::new(value);
     let custom_ca_bundle_path = if value_path == mitm_ca_trust_bundle.path {
+        if !startup_ca_env_keys_present_in_child.contains(key) {
+            return None;
+        }
         let startup_value = mitm_ca_trust_bundle.startup_env_values.get(key)?;
         resolve_ca_bundle_path(startup_value, &mitm_ca_trust_bundle.startup_cwd)
     } else if crate::certs::is_generated_trust_bundle_path(value_path, mitm_ca_trust_bundle) {
@@ -672,6 +690,7 @@ fn read_child_ca_dir_contents<F>(
     mitm_ca_trust_bundle: &crate::certs::ManagedMitmCaTrustBundle,
     env: &HashMap<String, String>,
     cwd: &Path,
+    startup_ca_env_keys_present_in_child: &HashSet<&'static str>,
     can_read_path: &F,
 ) -> Option<String>
 where
@@ -680,15 +699,12 @@ where
     let value = env
         .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
         .filter(|value| !value.is_empty())?;
-    let ca_dir_cwd = if mitm_ca_trust_bundle
-        .startup_env_values
-        .get(crate::certs::SSL_CERT_DIR_ENV_KEY)
-        == Some(value)
-    {
-        &mitm_ca_trust_bundle.startup_cwd
-    } else {
-        cwd
-    };
+    let ca_dir_cwd =
+        if startup_ca_env_keys_present_in_child.contains(crate::certs::SSL_CERT_DIR_ENV_KEY) {
+            &mitm_ca_trust_bundle.startup_cwd
+        } else {
+            cwd
+        };
     let mut trust_bundle = String::new();
     for ca_dir_path in std::env::split_paths(value).map(|path| {
         if path.is_absolute() {
@@ -741,7 +757,21 @@ fn read_readable_child_ca_bundle_contents<F>(
 where
     F: Fn(&Path) -> bool,
 {
-    match crate::certs::read_custom_ca_bundle(custom_ca_bundle_path, can_read_path) {
+    if !can_read_path(custom_ca_bundle_path) {
+        return None;
+    }
+    let custom_ca_bundle_path = match custom_ca_bundle_path.canonicalize() {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(
+                ca_env_key = key,
+                ca_bundle_path = %custom_ca_bundle_path.display(),
+                "failed to resolve child MITM CA bundle; leaving current value unchanged: {err}"
+            );
+            return None;
+        }
+    };
+    match crate::certs::read_custom_ca_bundle(&custom_ca_bundle_path, can_read_path) {
         Ok(contents) => Some(contents),
         Err(err) => {
             warn!(
@@ -845,13 +875,39 @@ impl NetworkProxy {
     where
         F: Fn(&Path) -> bool,
     {
-        self.apply_to_env(env);
-        self.runtime_settings()
+        let runtime_settings = self.runtime_settings();
+        let startup_ca_env_keys_present_in_child = runtime_settings
             .mitm_ca_trust_bundle
             .as_ref()
-            .map_or_else(Vec::new, |mitm_ca_trust_bundle| {
-                prepare_mitm_ca_trust_bundle_env(mitm_ca_trust_bundle, env, cwd, can_read_path)
-            })
+            .map_or_else(HashSet::new, |mitm_ca_trust_bundle| {
+                mitm_ca_trust_bundle
+                    .startup_env_values
+                    .iter()
+                    .filter_map(|(&key, startup_value)| {
+                        (env.get(key) == Some(startup_value)).then_some(key)
+                    })
+                    .collect()
+            });
+        apply_proxy_env_overrides(
+            env,
+            self.http_addr,
+            self.socks_addr,
+            self.socks_enabled,
+            runtime_settings.allow_local_binding,
+            runtime_settings.mitm_ca_trust_bundle.as_ref(),
+        );
+        runtime_settings.mitm_ca_trust_bundle.as_ref().map_or_else(
+            Vec::new,
+            |mitm_ca_trust_bundle| {
+                prepare_mitm_ca_trust_bundle_env(
+                    mitm_ca_trust_bundle,
+                    env,
+                    cwd,
+                    &startup_ca_env_keys_present_in_child,
+                    can_read_path,
+                )
+            },
+        )
     }
 
     pub async fn replace_config_state(&self, new_state: ConfigState) -> Result<()> {
@@ -1351,8 +1407,13 @@ mod tests {
             startup_cwd: dir.path().to_path_buf(),
         };
 
-        let bundle_paths =
-            prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |_| true);
+        let bundle_paths = prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::from(["REQUESTS_CA_BUNDLE"]),
+            |_| true,
+        );
 
         let startup_ca_trust_bundle_path = Path::new(
             env.get("REQUESTS_CA_BUNDLE")
@@ -1361,6 +1422,39 @@ mod tests {
         assert_eq!(
             fs::read_to_string(startup_ca_trust_bundle_path).unwrap(),
             "startup ca\nmanaged ca\n"
+        );
+        assert_eq!(bundle_paths.len(), 1);
+    }
+
+    #[test]
+    fn prepare_mitm_ca_trust_bundle_env_does_not_restore_filtered_startup_override() {
+        let dir = tempdir().unwrap();
+        let mitm_ca_trust_bundle_path = dir.path().join("ca-bundle.pem");
+        fs::write(&mitm_ca_trust_bundle_path, "managed ca\n").unwrap();
+        let mut env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            mitm_ca_trust_bundle_path.display().to_string(),
+        )]);
+        let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: mitm_ca_trust_bundle_path.clone(),
+            startup_env_values: HashMap::from([(
+                "REQUESTS_CA_BUNDLE",
+                "startup-ca.pem".to_string(),
+            )]),
+            startup_cwd: dir.path().to_path_buf(),
+        };
+
+        let bundle_paths = prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::new(),
+            |_| true,
+        );
+
+        assert_eq!(
+            env.get("REQUESTS_CA_BUNDLE"),
+            Some(&mitm_ca_trust_bundle_path.display().to_string())
         );
         assert_eq!(bundle_paths.len(), 1);
     }
@@ -1382,7 +1476,51 @@ mod tests {
             startup_cwd: dir.path().to_path_buf(),
         };
 
-        prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |_| true);
+        prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::new(),
+            |_| true,
+        );
+
+        let command_ca_trust_bundle_path = Path::new(
+            env.get("REQUESTS_CA_BUNDLE")
+                .expect("command-scoped CA bundle should be set"),
+        );
+        assert_eq!(
+            fs::read_to_string(command_ca_trust_bundle_path).unwrap(),
+            "command ca\nmanaged ca\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_mitm_ca_trust_bundle_env_materializes_readable_symlinked_override() {
+        let dir = tempdir().unwrap();
+        let command_ca_bundle_path = dir.path().join("command-ca.pem");
+        fs::write(&command_ca_bundle_path, "command ca\n").unwrap();
+        let symlinked_ca_bundle_path = dir.path().join("symlinked-command-ca.pem");
+        std::os::unix::fs::symlink(&command_ca_bundle_path, &symlinked_ca_bundle_path).unwrap();
+        let mut env = HashMap::from([(
+            "REQUESTS_CA_BUNDLE".to_string(),
+            symlinked_ca_bundle_path.display().to_string(),
+        )]);
+        let mitm_ca_trust_bundle_path = dir.path().join("ca-bundle.pem");
+        fs::write(&mitm_ca_trust_bundle_path, "managed ca\n").unwrap();
+        let mitm_ca_trust_bundle = crate::certs::ManagedMitmCaTrustBundle {
+            path: mitm_ca_trust_bundle_path,
+            startup_env_values: HashMap::new(),
+            startup_cwd: dir.path().to_path_buf(),
+        };
+
+        prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::new(),
+            |_| true,
+        );
 
         let command_ca_trust_bundle_path = Path::new(
             env.get("REQUESTS_CA_BUNDLE")
@@ -1424,7 +1562,13 @@ mod tests {
             startup_cwd: dir.path().to_path_buf(),
         };
 
-        prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |_| true);
+        prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::from([crate::certs::SSL_CERT_DIR_ENV_KEY]),
+            |_| true,
+        );
 
         let ssl_cert_file_path = Path::new(
             env.get("SSL_CERT_FILE")
@@ -1453,10 +1597,13 @@ mod tests {
             startup_cwd: dir.path().to_path_buf(),
         };
 
-        let bundle_paths =
-            prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |_| {
-                false
-            });
+        let bundle_paths = prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::new(),
+            |_| false,
+        );
 
         assert_eq!(
             env.get("REQUESTS_CA_BUNDLE"),
@@ -1486,10 +1633,13 @@ mod tests {
             startup_cwd: dir.path().to_path_buf(),
         };
 
-        let bundle_paths =
-            prepare_mitm_ca_trust_bundle_env(&mitm_ca_trust_bundle, &mut env, dir.path(), |path| {
-                path != canonical_command_ca_bundle_path
-            });
+        let bundle_paths = prepare_mitm_ca_trust_bundle_env(
+            &mitm_ca_trust_bundle,
+            &mut env,
+            dir.path(),
+            &HashSet::new(),
+            |path| path != canonical_command_ca_bundle_path,
+        );
 
         assert_eq!(
             env.get("REQUESTS_CA_BUNDLE"),

@@ -513,9 +513,9 @@ fn opened_file_path(path: &Path, file: &File) -> Result<PathBuf> {
     {
         let opened_path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
             .with_context(|| format!("failed to resolve opened CA bundle {}", path.display()))?;
-        return opened_path.canonicalize().with_context(|| {
-            format!("failed to canonicalize opened CA bundle {}", path.display())
-        });
+        opened_path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize opened CA bundle {}", path.display()))
     }
 
     #[cfg(target_os = "macos")]
