@@ -19,6 +19,7 @@ mod state;
 mod upstream;
 
 pub use certs::CUSTOM_CA_ENV_KEYS;
+pub use certs::SSL_CERT_DIR_ENV_KEY;
 pub use certs::is_managed_mitm_ca_trust_bundle_path;
 pub use config::NetworkDomainPermission;
 pub use config::NetworkDomainPermissionEntry;

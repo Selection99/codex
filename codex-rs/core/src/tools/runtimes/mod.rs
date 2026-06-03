@@ -17,6 +17,7 @@ use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ENV_KEYS;
 #[cfg(target_os = "macos")]
 use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
+use codex_network_proxy::SSL_CERT_DIR_ENV_KEY;
 use codex_network_proxy::is_managed_mitm_ca_trust_bundle_path;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -250,6 +251,7 @@ fn build_proxy_env_exports() -> (String, String) {
         .iter()
         .copied()
         .chain(CUSTOM_CA_ENV_KEYS)
+        .chain(std::iter::once(SSL_CERT_DIR_ENV_KEY))
         .filter(|key| is_valid_shell_variable_name(key))
         .collect::<Vec<_>>();
     keys.sort_unstable();

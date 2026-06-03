@@ -111,7 +111,7 @@ const MANAGED_MITM_CA_KEY: &str = "ca.key";
 const MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX: &str = "ca-bundle";
 const MAX_CUSTOM_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 const SSL_CERT_FILE_ENV_KEY: &str = "SSL_CERT_FILE";
-pub(crate) const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
+pub const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
 
 // Best-effort compatibility set for common child toolchains that accept a CA bundle path.
 // This is intentionally curated rather than pretending to cover every TLS client.
@@ -206,6 +206,17 @@ fn is_current_generated_trust_bundle_path(path: &Path, managed_ca_cert_path: &Pa
     let Ok(trust_bundle) = fs::read(path) else {
         return false;
     };
+    let expected_hash = format!("{:x}", Sha256::digest(&trust_bundle));
+    if path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .and_then(|file_stem| {
+            file_stem.strip_prefix(&format!("{MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX}-"))
+        })
+        .is_none_or(|hash| hash != expected_hash)
+    {
+        return false;
+    }
     let Ok(managed_ca_cert) = fs::read(managed_ca_cert_path) else {
         return false;
     };
@@ -378,34 +389,12 @@ fn persist_ca_trust_bundle(proxy_dir: &Path, trust_bundle: &str) -> Result<PathB
     Ok(trust_bundle_path)
 }
 
-pub(crate) fn is_generated_trust_bundle_path(
-    path: &Path,
-    managed_ca_trust_bundle: &ManagedMitmCaTrustBundle,
-) -> bool {
-    let Some(proxy_dir) = managed_ca_trust_bundle.path.parent() else {
-        return false;
-    };
-    if !matches_generated_trust_bundle_path(path, proxy_dir) {
-        return false;
-    }
-    let Ok(trust_bundle) = fs::read(path) else {
-        return false;
-    };
-    let Ok(managed_ca_trust_bundle) = fs::read(&managed_ca_trust_bundle.path) else {
-        return false;
-    };
-    !managed_ca_trust_bundle.is_empty()
-        && trust_bundle
-            .windows(managed_ca_trust_bundle.len())
-            .any(|window| window == managed_ca_trust_bundle)
-}
-
 fn matches_generated_trust_bundle_path(path: &Path, proxy_dir: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|file_name| file_name.to_str()) else {
         return false;
     };
     path.parent() == Some(proxy_dir)
-        && file_name.starts_with(MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX)
+        && file_name.starts_with(&format!("{MANAGED_MITM_CA_TRUST_BUNDLE_PREFIX}-"))
         && file_name.ends_with(".pem")
 }
 
@@ -780,6 +769,19 @@ mod tests {
         let trust_bundle_path = dir.path().join("ca-bundle-123.pem");
         fs::write(&managed_ca_cert_path, "managed ca\n").unwrap();
         fs::write(&trust_bundle_path, "stale managed bundle\n").unwrap();
+        assert!(!is_current_generated_trust_bundle_path(
+            &trust_bundle_path,
+            &managed_ca_cert_path,
+        ));
+    }
+
+    #[test]
+    fn current_generated_trust_bundle_path_rejects_hash_mismatch() {
+        let dir = tempdir().unwrap();
+        let managed_ca_cert_path = dir.path().join("ca.pem");
+        let trust_bundle_path = dir.path().join("ca-bundle-123.pem");
+        fs::write(&managed_ca_cert_path, "managed ca\n").unwrap();
+        fs::write(&trust_bundle_path, "custom ca\nmanaged ca\n").unwrap();
         assert!(!is_current_generated_trust_bundle_path(
             &trust_bundle_path,
             &managed_ca_cert_path,

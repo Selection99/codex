@@ -21,6 +21,10 @@ where
         startup_ca_env_keys_present_in_child,
         &can_read_path,
     );
+    // Fold SSL_CERT_DIR into SSL_CERT_FILE so children cannot consult an
+    // unmaterialized CA directory after preparation.
+    env.remove(crate::certs::SSL_CERT_DIR_ENV_KEY);
+    let mut materialized_ca_trust_bundle_paths = Vec::new();
     for key in crate::certs::CUSTOM_CA_ENV_KEYS {
         let Some(value) = env.get(key).filter(|value| !value.is_empty()) else {
             continue;
@@ -49,6 +53,7 @@ where
         ) {
             Ok(path) => {
                 env.insert(key.to_string(), path.to_string_lossy().into_owned());
+                materialized_ca_trust_bundle_paths.push(path);
             }
             Err(err) => {
                 warn!(
@@ -59,7 +64,11 @@ where
         }
     }
 
-    managed_mitm_ca_trust_bundle_paths_for_env(mitm_ca_trust_bundle, env)
+    managed_mitm_ca_trust_bundle_paths_for_env(
+        mitm_ca_trust_bundle,
+        env,
+        &materialized_ca_trust_bundle_paths,
+    )
 }
 
 fn resolve_ca_bundle_path(path: &str, cwd: &Path) -> std::path::PathBuf {
@@ -89,8 +98,6 @@ where
         }
         let startup_value = mitm_ca_trust_bundle.startup_env_values.get(key)?;
         resolve_ca_bundle_path(startup_value, &mitm_ca_trust_bundle.startup_cwd)
-    } else if crate::certs::is_generated_trust_bundle_path(value_path, mitm_ca_trust_bundle) {
-        return None;
     } else {
         resolve_ca_bundle_path(value, cwd)
     };
@@ -142,7 +149,7 @@ where
             Err(err) => {
                 warn!(
                     ca_bundle_path = %ca_dir_path.display(),
-                    "failed to read child MITM CA directory; leaving current value unchanged: {err}"
+                    "failed to read child MITM CA directory; skipping it: {err}"
                 );
             }
         }
@@ -157,6 +164,7 @@ where
 fn managed_mitm_ca_trust_bundle_paths_for_env(
     mitm_ca_trust_bundle: &ManagedMitmCaTrustBundle,
     env: &HashMap<String, String>,
+    materialized_ca_trust_bundle_paths: &[std::path::PathBuf],
 ) -> Vec<AbsolutePathBuf> {
     let mut paths = crate::certs::CUSTOM_CA_ENV_KEYS
         .into_iter()
@@ -164,7 +172,9 @@ fn managed_mitm_ca_trust_bundle_paths_for_env(
         .map(Path::new)
         .filter(|path| {
             *path == mitm_ca_trust_bundle.path
-                || crate::certs::is_generated_trust_bundle_path(path, mitm_ca_trust_bundle)
+                || materialized_ca_trust_bundle_paths
+                    .iter()
+                    .any(|materialized_path| path == materialized_path)
         })
         .filter_map(|path| AbsolutePathBuf::from_absolute_path(path).ok())
         .collect::<Vec<_>>();
