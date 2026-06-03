@@ -38,8 +38,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tracing::info;
@@ -115,6 +115,7 @@ const MAX_CUSTOM_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 const SSL_CERT_FILE_ENV_KEY: &str = "SSL_CERT_FILE";
 pub(crate) const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
 const NATIVE_CA_ENV_KEYS: [&str; 2] = [SSL_CERT_FILE_ENV_KEY, SSL_CERT_DIR_ENV_KEY];
+static NATIVE_CA_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 // Best-effort compatibility set for common child toolchains that accept a CA bundle path.
 // This is intentionally curated rather than pretending to cover every TLS client.
@@ -263,7 +264,15 @@ where
         "CA bundle {} is not readable by child policy",
         path.display()
     );
-    let mut file = open_readonly_without_following_symlink(path)?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve CA bundle {}", path.display()))?;
+    anyhow::ensure!(
+        can_read_path(&path),
+        "CA bundle {} is not readable by child policy",
+        path.display()
+    );
+    let mut file = open_readonly_without_following_symlink(&path)?;
     let metadata = file
         .metadata()
         .with_context(|| format!("failed to stat CA bundle {}", path.display()))?;
@@ -277,13 +286,13 @@ where
         "CA bundle {} exceeds {MAX_CUSTOM_CA_BUNDLE_BYTES} bytes",
         path.display()
     );
-    let opened_path = opened_file_path(path, &file)?;
+    let opened_path = opened_file_path(&path, &file)?;
     anyhow::ensure!(
         can_read_path(&opened_path),
         "CA bundle {} is not readable by child policy",
         opened_path.display()
     );
-    validate_opened_file_path(path, &opened_path, &metadata)?;
+    validate_opened_file_path(&path, &opened_path, &metadata)?;
 
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     std::io::Read::by_ref(&mut file)
@@ -304,6 +313,19 @@ where
     F: Fn(&Path) -> bool,
 {
     anyhow::ensure!(
+        can_read_path(dir),
+        "CA directory {} is not readable by child policy",
+        dir.display()
+    );
+    let dir = dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve CA directory {}", dir.display()))?;
+    anyhow::ensure!(
+        can_read_path(&dir),
+        "CA directory {} is not readable by child policy",
+        dir.display()
+    );
+    anyhow::ensure!(
         dir.metadata()
             .with_context(|| format!("failed to stat CA directory {}", dir.display()))?
             .is_dir(),
@@ -312,7 +334,7 @@ where
     );
 
     let mut trust_bundle = String::new();
-    for entry in fs::read_dir(dir)
+    for entry in fs::read_dir(&dir)
         .with_context(|| format!("failed to read CA directory {}", dir.display()))?
     {
         let entry = entry
@@ -321,29 +343,14 @@ where
         let Some(file_name) = path.file_name() else {
             continue;
         };
-        if !is_ca_dir_hash_file_name(file_name) || !can_read_path(&path) {
+        if !is_ca_dir_hash_file_name(file_name) {
             continue;
         }
-
-        let canonical_path = match path.canonicalize() {
-            Ok(path) => path,
-            Err(err) => {
-                warn!(
-                    ca_bundle_path = %path.display(),
-                    "failed to resolve CA directory entry; skipping it: {err}"
-                );
-                continue;
-            }
-        };
-        if !can_read_path(&canonical_path) {
-            continue;
-        }
-
-        match read_custom_ca_bundle(&canonical_path, &can_read_path) {
+        match read_custom_ca_bundle(&path, &can_read_path) {
             Ok(contents) => append_bounded_pem_contents(&mut trust_bundle, &contents)?,
             Err(err) => {
                 warn!(
-                    ca_bundle_path = %canonical_path.display(),
+                    ca_bundle_path = %path.display(),
                     "failed to read CA directory entry; skipping it: {err}"
                 );
             }
@@ -449,16 +456,11 @@ fn is_ca_dir_hash_file_name(file_name: &OsStr) -> bool {
 }
 
 fn load_platform_native_certs() -> rustls_native_certs::CertificateResult {
-    let _guard = native_ca_env_lock()
+    let _guard = NATIVE_CA_ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _env_guard = NativeCaEnvGuard::new();
     rustls_native_certs::load_native_certs()
-}
-
-fn native_ca_env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 struct NativeCaEnvGuard {
@@ -877,6 +879,21 @@ mod tests {
         assert!(
             err.to_string().contains("must be a regular file"),
             "unexpected error: {err:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_custom_ca_bundle_reads_readable_symlink() {
+        let dir = tempdir().unwrap();
+        let ca_bundle_path = dir.path().join("ca.pem");
+        let symlink_path = dir.path().join("ca-link.pem");
+        fs::write(&ca_bundle_path, "custom ca\n").unwrap();
+        std::os::unix::fs::symlink(&ca_bundle_path, &symlink_path).unwrap();
+
+        assert_eq!(
+            read_custom_ca_bundle(&symlink_path, |_| true).unwrap(),
+            "custom ca\n"
         );
     }
 

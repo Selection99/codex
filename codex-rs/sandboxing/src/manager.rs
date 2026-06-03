@@ -62,7 +62,7 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
     }
 }
 
-fn with_managed_mitm_ca_readable_roots(
+pub fn with_managed_mitm_ca_readable_roots(
     permission_profile: PermissionProfile,
     managed_mitm_ca_trust_bundle_paths: &[AbsolutePathBuf],
     sandbox_policy_cwd: &Path,
@@ -109,21 +109,6 @@ fn can_read_path_with_policy(
 ) -> bool {
     file_system_sandbox_policy.can_read_path_with_cwd(path, cwd)
         && !read_deny_matcher.is_some_and(|matcher| matcher.is_read_denied(path))
-}
-
-pub fn with_managed_mitm_ca_readable_root(
-    permission_profile: PermissionProfile,
-    managed_mitm_ca_trust_bundle_path: Option<&AbsolutePathBuf>,
-    sandbox_policy_cwd: &Path,
-) -> PermissionProfile {
-    let Some(path) = managed_mitm_ca_trust_bundle_path else {
-        return permission_profile;
-    };
-    with_managed_mitm_ca_readable_roots(
-        permission_profile,
-        std::slice::from_ref(path),
-        sandbox_policy_cwd,
-    )
 }
 
 #[derive(Debug)]
