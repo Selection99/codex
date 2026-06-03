@@ -476,8 +476,8 @@ pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: Dy
 }
 
 pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerRefreshConfig) {
-    let mut guard = sess.pending_mcp_server_refresh_config.lock().await;
-    *guard = Some(refresh_config);
+    sess.set_pending_mcp_server_refresh_config(refresh_config)
+        .await;
 }
 
 pub async fn reload_user_config(sess: &Arc<Session>) {

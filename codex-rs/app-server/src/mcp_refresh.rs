@@ -4,7 +4,6 @@ use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::McpServerRefreshConfig;
-use codex_protocol::protocol::Op;
 use std::io;
 use std::sync::Arc;
 use tracing::warn;
@@ -86,9 +85,8 @@ async fn queue_refresh(
     config: McpServerRefreshConfig,
 ) -> io::Result<()> {
     thread
-        .submit(Op::RefreshMcpServers { config })
+        .set_pending_mcp_server_refresh_config(config)
         .await
-        .map(|_| ())
         .map_err(|err| {
             io::Error::other(format!(
                 "failed to queue MCP refresh for thread {thread_id}: {err}"

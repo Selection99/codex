@@ -78,6 +78,33 @@ impl Session {
         Arc::new(GuardianMcpElicitationReviewer::new(self))
     }
 
+    pub(crate) async fn set_pending_mcp_server_refresh_config(
+        &self,
+        refresh_config: McpServerRefreshConfig,
+    ) {
+        let _refresh_guard = self.mcp_server_refresh_lock.lock().await;
+        let mut guard = self.pending_mcp_server_refresh_config.lock().await;
+        *guard = Some(refresh_config);
+    }
+
+    pub(crate) async fn refresh_pending_mcp_servers_for_out_of_turn_call(self: &Arc<Self>) {
+        let _refresh_guard = self.mcp_server_refresh_lock.lock().await;
+        if self
+            .pending_mcp_server_refresh_config
+            .lock()
+            .await
+            .is_none()
+        {
+            return;
+        }
+        let turn_context = self.new_default_turn().await;
+        self.refresh_mcp_servers_if_requested_locked(
+            &turn_context,
+            Some(self.mcp_elicitation_reviewer()),
+        )
+        .await;
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
@@ -266,6 +293,15 @@ impl Session {
             .await
     }
 
+    pub async fn read_resource_out_of_turn(
+        self: &Arc<Self>,
+        server: &str,
+        params: ReadResourceRequestParams,
+    ) -> anyhow::Result<ReadResourceResult> {
+        self.refresh_pending_mcp_servers_for_out_of_turn_call().await;
+        self.read_resource(server, params).await
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "MCP resource calls are serialized through the session-owned manager guard"
@@ -300,6 +336,17 @@ impl Session {
             .await
             .call_tool(server, tool, arguments, meta)
             .await
+    }
+
+    pub async fn call_tool_out_of_turn(
+        self: &Arc<Self>,
+        server: &str,
+        tool: &str,
+        arguments: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
+    ) -> anyhow::Result<CallToolResult> {
+        self.refresh_pending_mcp_servers_for_out_of_turn_call().await;
+        self.call_tool(server, tool, arguments, meta).await
     }
 
     async fn refresh_mcp_servers_inner(
@@ -384,6 +431,16 @@ impl Session {
         turn_context: &TurnContext,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        let _refresh_guard = self.mcp_server_refresh_lock.lock().await;
+        self.refresh_mcp_servers_if_requested_locked(turn_context, elicitation_reviewer)
+            .await;
+    }
+
+    async fn refresh_mcp_servers_if_requested_locked(
+        &self,
+        turn_context: &TurnContext,
+        elicitation_reviewer: Option<ElicitationReviewerHandle>,
+    ) {
         let refresh_config = { self.pending_mcp_server_refresh_config.lock().await.take() };
         let Some(refresh_config) = refresh_config else {
             return;
@@ -423,6 +480,7 @@ impl Session {
         store_mode: OAuthCredentialsStoreMode,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        let _refresh_guard = self.mcp_server_refresh_lock.lock().await;
         self.refresh_mcp_servers_inner(turn_context, mcp_servers, store_mode, elicitation_reviewer)
             .await;
     }

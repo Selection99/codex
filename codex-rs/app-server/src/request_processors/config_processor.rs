@@ -377,6 +377,8 @@ impl ConfigRequestProcessor {
             };
             thread.refresh_runtime_config(next_config.clone()).await;
         }
+        crate::mcp_refresh::queue_best_effort_refresh(&self.thread_manager, &self.config_manager)
+            .await;
     }
 
     async fn emit_plugin_toggle_events(

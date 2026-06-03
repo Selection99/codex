@@ -3,16 +3,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::TestAppServer;
-use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::to_response;
 use app_test_support::write_mock_responses_config_toml;
 use axum::Router;
+use codex_app_server_protocol::ConfigBatchWriteParams;
+use codex_app_server_protocol::ConfigEdit;
+use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::MergeStrategy;
 use codex_app_server_protocol::McpElicitationSchema;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequest;
@@ -29,6 +34,8 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_app_server_protocol::WriteStatus;
+use codex_features::Feature;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
@@ -54,6 +61,7 @@ use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use serde_json::json;
+use serde_json::Value;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -68,6 +76,280 @@ const ELICITATION_MESSAGE: &str = "Allow this request?";
 const URL_ELICITATION_TRIGGER_MESSAGE: &str = "auth";
 const URL_ELICITATION_MESSAGE: &str = "Sign in to GitHub to continue.";
 const URL_ELICITATION_URL: &str = "https://github.example/login/device";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_batch_write_reload_refreshes_loaded_thread_mcp_tools() -> Result<()> {
+    let before_reload_tool_search_call_id = "tool-search-before-reload";
+    let after_reload_tool_search_call_id = "tool-search-after-reload";
+    let responses = vec![
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_tool_search_call(
+                before_reload_tool_search_call_id,
+                &json!({
+                    "query": "echo hello tool",
+                    "limit": 5,
+                }),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("resp-2"),
+            responses::ev_assistant_message("msg-1", "Done"),
+            responses::ev_completed("resp-2"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("resp-3"),
+            responses::ev_tool_search_call(
+                after_reload_tool_search_call_id,
+                &json!({
+                    "query": "echo hello tool",
+                    "limit": 5,
+                }),
+            ),
+            responses::ev_completed("resp-3"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("resp-4"),
+            responses::ev_assistant_message("msg-2", "Done"),
+            responses::ev_completed("resp-4"),
+        ]),
+    ];
+    let responses_server = create_mock_responses_server_sequence(responses).await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    let feature_flags = BTreeMap::from([(Feature::ToolSearchAlwaysDeferMcpTools, true)]);
+    write_mock_responses_config_toml(
+        codex_home.path(),
+        &responses_server.uri(),
+        &feature_flags,
+        /*auto_compact_limit*/ 1024,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            dynamic_tools: Some(vec![DynamicToolSpec {
+                namespace: Some("diagnostic".to_string()),
+                name: "calendar_widget".to_string(),
+                description:
+                    "Calendar widget for unrelated scheduling diagnostics before MCP reload."
+                        .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+            }]),
+            ..Default::default()
+        })
+        .await?;
+    let thread_start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
+
+    let turn_start_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Which MCP tools are available before reload?".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response(turn_start_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let batch_write_id = mcp
+        .send_config_batch_write_request(ConfigBatchWriteParams {
+            file_path: Some(codex_home.path().join("config.toml").display().to_string()),
+            edits: vec![ConfigEdit {
+                key_path: format!("mcp_servers.{TEST_SERVER_NAME}.url"),
+                value: json!(format!("{mcp_server_url}/mcp")),
+                merge_strategy: MergeStrategy::Replace,
+            }],
+            expected_version: None,
+            reload_user_config: true,
+        })
+        .await?;
+    let batch_write_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(batch_write_id)),
+    )
+    .await??;
+    let batch_write: ConfigWriteResponse = to_response(batch_write_resp)?;
+    assert_eq!(batch_write.status, WriteStatus::Ok);
+
+    let immediate_tool_call_request_id = mcp
+        .send_mcp_server_tool_call_request(McpServerToolCallParams {
+            thread_id: thread.id.clone(),
+            server: TEST_SERVER_NAME.to_string(),
+            tool: TEST_TOOL_NAME.to_string(),
+            arguments: Some(json!({
+                "message": "hello immediately after reload",
+            })),
+            meta: None,
+        })
+        .await?;
+    let immediate_tool_call_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(immediate_tool_call_request_id)),
+    )
+    .await??;
+    let immediate_response: McpServerToolCallResponse = to_response(immediate_tool_call_response)?;
+
+    assert_eq!(immediate_response.content.len(), 1);
+    assert_eq!(immediate_response.content[0].get("type"), Some(&json!("text")));
+    assert_eq!(
+        immediate_response.content[0].get("text"),
+        Some(&json!("echo: hello immediately after reload"))
+    );
+
+    let turn_start_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Which MCP tools are available?".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response(turn_start_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let response_bodies = responses_bodies(&responses_server).await?;
+    assert_eq!(response_bodies.len(), 4);
+    let before_reload_tools =
+        tool_search_output_tools(&response_bodies[1], before_reload_tool_search_call_id);
+    assert!(
+        !tool_search_output_has_namespace_child(
+            &before_reload_tools,
+            "mcp__tool_server",
+            TEST_TOOL_NAME
+        ),
+        "tool_search output should not include the MCP tool before reload, got {before_reload_tools:?}"
+    );
+    let tools = tool_search_output_tools(&response_bodies[3], after_reload_tool_search_call_id);
+    assert!(
+        tool_search_output_has_namespace_child(&tools, "mcp__tool_server", TEST_TOOL_NAME),
+        "tool_search output should include the reloaded MCP tool, got {tools:?}"
+    );
+
+    let tool_call_request_id = mcp
+        .send_mcp_server_tool_call_request(McpServerToolCallParams {
+            thread_id: thread.id,
+            server: TEST_SERVER_NAME.to_string(),
+            tool: TEST_TOOL_NAME.to_string(),
+            arguments: Some(json!({
+                "message": "hello after reload",
+            })),
+            meta: None,
+        })
+        .await?;
+    let tool_call_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(tool_call_request_id)),
+    )
+    .await??;
+    let response: McpServerToolCallResponse = to_response(tool_call_response)?;
+
+    assert_eq!(response.content.len(), 1);
+    assert_eq!(response.content[0].get("type"), Some(&json!("text")));
+    assert_eq!(
+        response.content[0].get("text"),
+        Some(&json!("echo: hello after reload"))
+    );
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
+
+    Ok(())
+}
+
+async fn responses_bodies(server: &wiremock::MockServer) -> Result<Vec<Value>> {
+    let requests = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?;
+
+    requests
+        .into_iter()
+        .filter(|req| req.url.path().ends_with("/responses"))
+        .map(|req| {
+            req.body_json::<Value>()
+                .context("request body should be JSON")
+        })
+        .collect()
+}
+
+fn tool_search_output_tools(body: &Value, call_id: &str) -> Vec<Value> {
+    body.get("input")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("type").and_then(Value::as_str) == Some("tool_search_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+        })
+        .and_then(|item| item.get("tools"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn tool_search_output_has_namespace_child(
+    tools: &[Value],
+    namespace: &str,
+    tool_name: &str,
+) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("type").and_then(Value::as_str) == Some("namespace")
+            && tool.get("name").and_then(Value::as_str) == Some(namespace)
+            && tool
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|children| {
+                    children.iter().any(|child| {
+                        child.get("type").and_then(Value::as_str) == Some("function")
+                            && child.get("name").and_then(Value::as_str) == Some(tool_name)
+                    })
+                })
+    })
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
