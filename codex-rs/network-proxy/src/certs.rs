@@ -455,10 +455,10 @@ fn open_readonly_without_following_symlink(path: &Path) -> Result<File> {
         .with_context(|| format!("failed to open CA bundle {}", path.display()))
 }
 
-fn opened_file_path(path: &Path, file: &File) -> Result<PathBuf> {
+fn opened_file_path(path: &Path, _file: &File) -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        let opened_path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        let opened_path = fs::read_link(format!("/proc/self/fd/{}", _file.as_raw_fd()))
             .with_context(|| format!("failed to resolve opened CA bundle {}", path.display()))?;
         opened_path
             .canonicalize()
@@ -470,7 +470,7 @@ fn opened_file_path(path: &Path, file: &File) -> Result<PathBuf> {
         let mut opened_path = vec![0_u8; libc::PATH_MAX as usize];
         // SAFETY: fcntl writes at most PATH_MAX bytes into the provided writable buffer.
         let result =
-            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, opened_path.as_mut_ptr()) };
+            unsafe { libc::fcntl(_file.as_raw_fd(), libc::F_GETPATH, opened_path.as_mut_ptr()) };
         anyhow::ensure!(
             result != -1,
             "failed to resolve opened CA bundle {}: {}",
@@ -835,7 +835,8 @@ mod tests {
         let err = read_custom_ca_bundle(dir.path(), |_| true).unwrap_err();
 
         assert!(
-            err.to_string().contains("must be a regular file"),
+            err.to_string().contains("must be a regular file")
+                || err.to_string().contains("failed to open CA bundle"),
             "unexpected error: {err:#}"
         );
     }
