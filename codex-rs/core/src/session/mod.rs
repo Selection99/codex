@@ -28,6 +28,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
+use crate::context::TerminalInstructions;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::exec_policy::ExecPolicyManager;
@@ -2784,6 +2785,9 @@ impl Session {
             && !developer_instructions.is_empty()
         {
             developer_sections.push(developer_instructions.to_string());
+        }
+        if matches!(&session_source, SessionSource::Cli | SessionSource::Exec) {
+            developer_sections.push(TerminalInstructions.render());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
         if turn_context.config.include_collaboration_mode_instructions
