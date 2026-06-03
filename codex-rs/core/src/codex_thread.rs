@@ -24,7 +24,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
-use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -512,20 +511,6 @@ impl CodexThread {
         self.codex.session.refresh_runtime_config(next_config).await;
     }
 
-    pub async fn set_pending_mcp_server_refresh_config(
-        &self,
-        config: McpServerRefreshConfig,
-    ) -> CodexResult<()> {
-        if self.codex.tx_sub.is_closed() {
-            return Err(CodexErr::InternalAgentDied);
-        }
-        self.codex
-            .session
-            .set_pending_mcp_server_refresh_config(config)
-            .await;
-        Ok(())
-    }
-
     pub async fn environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
         self.codex.thread_environment_selections().await
     }
@@ -538,7 +523,7 @@ impl CodexThread {
         let result = self
             .codex
             .session
-            .read_resource_out_of_turn(server, ReadResourceRequestParams::new(uri))
+            .read_resource(server, ReadResourceRequestParams::new(uri))
             .await?;
 
         Ok(serde_json::to_value(result)?)
@@ -553,7 +538,7 @@ impl CodexThread {
     ) -> anyhow::Result<CallToolResult> {
         self.codex
             .session
-            .call_tool_out_of_turn(server, tool, arguments, meta)
+            .call_tool(server, tool, arguments, meta)
             .await
     }
 

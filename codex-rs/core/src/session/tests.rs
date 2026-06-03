@@ -4830,7 +4830,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
-        mcp_server_refresh_lock: Mutex::new(()),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
@@ -6921,7 +6920,6 @@ where
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
-        mcp_server_refresh_lock: Mutex::new(()),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
@@ -7045,70 +7043,6 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
     );
     let new_token = session.mcp_startup_cancellation_token().await;
     assert!(!new_token.is_cancelled());
-}
-
-#[tokio::test]
-async fn out_of_turn_mcp_refresh_waits_for_in_progress_refresh() {
-    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
-    let refresh_guard = session.mcp_server_refresh_lock.lock().await;
-
-    let session_for_refresh = Arc::clone(&session);
-    let refresh = tokio::spawn(async move {
-        session_for_refresh
-            .refresh_pending_mcp_servers_for_out_of_turn_call()
-            .await;
-    });
-
-    sleep(Duration::from_millis(10)).await;
-    assert!(
-        !refresh.is_finished(),
-        "out-of-turn MCP refresh should wait for the in-progress refresh lock"
-    );
-
-    drop(refresh_guard);
-    timeout(Duration::from_secs(1), refresh)
-        .await
-        .expect("out-of-turn refresh should finish after the refresh lock is released")
-        .expect("out-of-turn refresh task should not panic");
-}
-
-#[tokio::test]
-async fn setting_pending_mcp_refresh_waits_for_in_progress_refresh() {
-    let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
-    let refresh_guard = session.mcp_server_refresh_lock.lock().await;
-
-    let mcp_oauth_credentials_store_mode =
-        serde_json::to_value(OAuthCredentialsStoreMode::Auto).expect("serialize store mode");
-    let refresh_config = McpServerRefreshConfig {
-        mcp_servers: json!({}),
-        mcp_oauth_credentials_store_mode,
-    };
-
-    let session_for_refresh = Arc::clone(&session);
-    let set_pending = tokio::spawn(async move {
-        session_for_refresh
-            .set_pending_mcp_server_refresh_config(refresh_config)
-            .await;
-    });
-
-    sleep(Duration::from_millis(10)).await;
-    assert!(
-        !set_pending.is_finished(),
-        "setting pending MCP refresh should wait for the in-progress refresh lock"
-    );
-
-    drop(refresh_guard);
-    timeout(Duration::from_secs(1), set_pending)
-        .await
-        .expect("setting pending refresh should finish after the refresh lock is released")
-        .expect("setting pending refresh task should not panic");
-    assert!(
-        session
-            .pending_mcp_server_refresh_config
-            .lock()
-            .await
-            .is_some()
-    );
 }
 
 #[tokio::test]
