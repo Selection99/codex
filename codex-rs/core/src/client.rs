@@ -415,6 +415,16 @@ impl ModelClient {
         self.state.http_state.clone()
     }
 
+    pub(crate) fn http_state_context_for_surface(
+        &self,
+        surface: HttpStateSurface,
+    ) -> Option<HttpStateContext> {
+        self.state
+            .http_state
+            .as_ref()
+            .map(|state| state.for_surface(surface))
+    }
+
     pub(crate) fn set_http_state_surface(&self, surface: HttpStateSurface) {
         if self
             .state
