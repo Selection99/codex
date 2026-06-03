@@ -35,17 +35,19 @@ fn requests_ca_bundle_contents(env: &HashMap<String, String>) -> String {
 fn materializes_readable_startup_ca_override() {
     let dir = tempdir().unwrap();
     let startup_ca_bundle_path = dir.path().join("startup-ca.pem");
+    let command_cwd = dir.path().join("command-cwd");
+    fs::create_dir(&command_cwd).unwrap();
     fs::write(&startup_ca_bundle_path, "startup ca\n").unwrap();
     let mitm_ca_trust_bundle = test_mitm_ca_trust_bundle(
         &dir,
         HashMap::from([(REQUESTS_CA_BUNDLE_ENV_KEY, "startup-ca.pem".to_string())]),
     );
-    let mut env = requests_ca_bundle_env(mitm_ca_trust_bundle.path.display().to_string());
+    let mut env = requests_ca_bundle_env("startup-ca.pem");
 
     let bundle_paths = prepare_mitm_ca_trust_bundle_env(
         &mitm_ca_trust_bundle,
         &mut env,
-        dir.path(),
+        &command_cwd,
         &[REQUESTS_CA_BUNDLE_ENV_KEY],
         |_| true,
     );

@@ -28,10 +28,10 @@ pub(crate) fn load_platform_native_certs() -> CertificateResult {
     use security_framework::trust_settings::Domain;
     use security_framework::trust_settings::TrustSettings;
     use security_framework::trust_settings::TrustSettingsForCertificate;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     let mut result = CertificateResult::default();
-    let mut all_certs = HashMap::new();
+    let mut all_certs = BTreeMap::new();
     for domain in &[Domain::User, Domain::Admin, Domain::System] {
         let ts = TrustSettings::new(*domain);
         let iter = match ts.iter() {
@@ -52,7 +52,9 @@ pub(crate) fn load_platform_native_certs() -> CertificateResult {
         for cert in iter {
             let der = cert.to_der();
             let trusted = match ts.tls_trust_settings_for_certificate(&cert) {
-                Ok(trusted) => trusted.unwrap_or(TrustSettingsForCertificate::TrustRoot),
+                Ok(Some(trusted)) => trusted,
+                Ok(None) if *domain == Domain::System => TrustSettingsForCertificate::TrustRoot,
+                Ok(None) => continue,
                 Err(err) => {
                     result.errors.push(Error {
                         context: "certificate not trusted",

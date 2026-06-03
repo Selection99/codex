@@ -92,12 +92,11 @@ where
     F: Fn(&Path) -> bool,
 {
     let value_path = Path::new(value);
-    let custom_ca_bundle_path = if value_path == mitm_ca_trust_bundle.path {
-        if !startup_ca_env_keys_present_in_child.contains(&key) {
-            return None;
-        }
+    let custom_ca_bundle_path = if startup_ca_env_keys_present_in_child.contains(&key) {
         let startup_value = mitm_ca_trust_bundle.startup_env_values.get(key)?;
         resolve_ca_bundle_path(startup_value, &mitm_ca_trust_bundle.startup_cwd)
+    } else if value_path == mitm_ca_trust_bundle.path {
+        return None;
     } else {
         resolve_ca_bundle_path(value, cwd)
     };
