@@ -4,7 +4,9 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerStack;
 use codex_config::LoaderOverrides;
 use codex_config::ThreadConfigLoader;
+use codex_config::build_cli_overrides_layer;
 use codex_config::loader::load_config_layers_state;
+use codex_config::merge_toml_values;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_exec_server::LOCAL_FS;
@@ -235,15 +237,7 @@ impl ConfigManager {
                 )
             })?);
         }
-        let merged_cli_overrides = cli_overrides
-            .iter()
-            .cloned()
-            .chain(
-                request_overrides
-                    .into_iter()
-                    .map(|(key, value)| (key, json_to_toml(value))),
-            )
-            .collect::<Vec<_>>();
+        let merged_cli_overrides = merge_session_overrides(cli_overrides, request_overrides);
 
         let mut config = codex_core::config::ConfigBuilder::default()
             .codex_home(self.codex_home.clone())
@@ -353,6 +347,32 @@ pub(crate) fn protected_feature_keys(config_layer_stack: &ConfigLayerStack) -> B
     protected_features
 }
 
+/// Compose process CLI overrides with per-request config overrides into one
+/// session layer.
+///
+/// Each source is materialized independently before the request layer is
+/// merged over the process layer. This preserves process leaves that a request
+/// table does not address while retaining request precedence for explicit
+/// conflicts. Arrays and scalar values continue to replace lower-precedence
+/// values according to [`merge_toml_values`].
+fn merge_session_overrides(
+    cli_overrides: &[(String, TomlValue)],
+    request_overrides: HashMap<String, serde_json::Value>,
+) -> Vec<(String, TomlValue)> {
+    let mut merged_layer = build_cli_overrides_layer(cli_overrides);
+    let request_overrides = request_overrides
+        .into_iter()
+        .map(|(key, value)| (key, json_to_toml(value)))
+        .collect::<Vec<_>>();
+    let request_layer = build_cli_overrides_layer(&request_overrides);
+    merge_toml_values(&mut merged_layer, &request_layer);
+
+    let TomlValue::Table(merged_table) = merged_layer else {
+        unreachable!("config override layers always have a table root");
+    };
+    merged_table.into_iter().collect()
+}
+
 pub(crate) fn apply_runtime_feature_enablement(
     config: &mut Config,
     runtime_feature_enablement: &BTreeMap<String, bool>,
@@ -374,3 +394,7 @@ pub(crate) fn apply_runtime_feature_enablement(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "config_manager_tests.rs"]
+mod tests;
