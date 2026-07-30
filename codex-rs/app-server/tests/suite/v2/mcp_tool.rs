@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,7 @@ use codex_features::Feature;
 use codex_utils_path_uri::PathUri;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use core_test_support::responses;
+use core_test_support::stdio_server_bin;
 use futures::SinkExt;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
@@ -85,6 +87,9 @@ const URL_ELICITATION_TRIGGER_MESSAGE: &str = "auth";
 const URL_ELICITATION_MESSAGE: &str = "Sign in to GitHub to continue.";
 const URL_ELICITATION_URL: &str = "https://github.example/login/device";
 const LATE_ENVIRONMENT_ID: &str = "late-environment";
+const PROCESS_PROXY: &str = "http://process-proxy.example:2407";
+const NODE_USE_ENV_PROXY: &str = "1";
+const STDIO_TEST_TOOL_NAME: &str = "echo";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
@@ -146,6 +151,101 @@ async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
     mcp_server_handle.abort();
     let _ = mcp_server_handle.await;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_config_table_preserves_process_cli_mcp_env() -> Result<()> {
+    let responses_server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    let stdio_server = stdio_server_bin()?;
+    MockResponsesConfig::new(&responses_server.uri())
+        .with_extra_config(&format!(
+            "[mcp_servers.{TEST_SERVER_NAME}]\ncommand = {}",
+            toml::Value::String(stdio_server.clone())
+        ))
+        .write(codex_home.path())?;
+    let proxy_override = format!(
+        "mcp_servers.{TEST_SERVER_NAME}.env.HTTP_PROXY={}",
+        toml::Value::String(PROCESS_PROXY.to_string())
+    );
+    let node_proxy_override = format!(
+        "mcp_servers.{TEST_SERVER_NAME}.env.NODE_USE_ENV_PROXY={}",
+        toml::Value::String(NODE_USE_ENV_PROXY.to_string())
+    );
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_args(&[
+            "--strict-config",
+            "-c",
+            &proxy_override,
+            "-c",
+            &node_proxy_override,
+        ])
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            config: Some(HashMap::from([(
+                format!("mcp_servers.{TEST_SERVER_NAME}"),
+                json!({
+                    "command": stdio_server,
+                    "args": [],
+                    "startup_timeout_sec": 10,
+                    "env": {
+                        "MCP_TEST_VALUE": "request"
+                    }
+                }),
+            )])),
+            ..Default::default()
+        })
+        .await?;
+    let response: McpServerToolCallResponse = mcp
+        .request(|request_id| ClientRequest::McpServerToolCall {
+            request_id,
+            params: McpServerToolCallParams {
+                thread_id: thread.id.clone(),
+                server: TEST_SERVER_NAME.to_string(),
+                tool: STDIO_TEST_TOOL_NAME.to_string(),
+                arguments: Some(json!({
+                    "message": "proxy check",
+                    "env_var": "HTTP_PROXY",
+                })),
+                meta: None,
+            },
+        })
+        .await?;
+    let node_proxy_response: McpServerToolCallResponse = mcp
+        .request(|request_id| ClientRequest::McpServerToolCall {
+            request_id,
+            params: McpServerToolCallParams {
+                thread_id: thread.id,
+                server: TEST_SERVER_NAME.to_string(),
+                tool: STDIO_TEST_TOOL_NAME.to_string(),
+                arguments: Some(json!({
+                    "message": "node proxy check",
+                    "env_var": "NODE_USE_ENV_PROXY",
+                })),
+                meta: None,
+            },
+        })
+        .await?;
+
+    assert_eq!(
+        (response.structured_content, node_proxy_response.structured_content),
+        (
+            Some(json!({
+                "echo": "ECHOING: proxy check",
+                "env": PROCESS_PROXY,
+            })),
+            Some(json!({
+                "echo": "ECHOING: node proxy check",
+                "env": NODE_USE_ENV_PROXY,
+            })),
+        )
+    );
     Ok(())
 }
 
