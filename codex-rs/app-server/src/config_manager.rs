@@ -4,9 +4,7 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLayerStack;
 use codex_config::LoaderOverrides;
 use codex_config::ThreadConfigLoader;
-use codex_config::build_cli_overrides_layer;
 use codex_config::loader::load_config_layers_state;
-use codex_config::merge_toml_values;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_exec_server::LOCAL_FS;
@@ -350,27 +348,85 @@ pub(crate) fn protected_feature_keys(config_layer_stack: &ConfigLayerStack) -> B
 /// Compose process CLI overrides with per-request config overrides into one
 /// session layer.
 ///
-/// Each source is materialized independently before the request layer is
-/// merged over the process layer. This preserves process leaves that a request
-/// table does not address while retaining request precedence for explicit
-/// conflicts. Arrays and scalar values continue to replace lower-precedence
-/// values according to [`merge_toml_values`].
+/// Request overrides retain the existing whole-value replacement semantics.
+/// The one compatibility exception is a full stdio MCP server table: explicit
+/// process CLI leaves under that server's `env` table are replayed when the
+/// request did not provide the same environment key. Desktop sends a complete
+/// `mcp_servers.node_repl` table, while the launcher injects proxy environment
+/// leaves through process CLI flags.
+///
+/// Request ancestors are applied before descendants so a more-specific
+/// request key deterministically wins instead of depending on `HashMap`
+/// iteration order.
 fn merge_session_overrides(
     cli_overrides: &[(String, TomlValue)],
     request_overrides: HashMap<String, serde_json::Value>,
 ) -> Vec<(String, TomlValue)> {
-    let mut merged_layer = build_cli_overrides_layer(cli_overrides);
-    let request_overrides = request_overrides
+    let mut request_overrides = request_overrides
         .into_iter()
         .map(|(key, value)| (key, json_to_toml(value)))
         .collect::<Vec<_>>();
-    let request_layer = build_cli_overrides_layer(&request_overrides);
-    merge_toml_values(&mut merged_layer, &request_layer);
+    request_overrides.sort_by(|(left, _), (right, _)| {
+        left.split('.')
+            .count()
+            .cmp(&right.split('.').count())
+            .then_with(|| left.cmp(right))
+    });
 
-    let TomlValue::Table(merged_table) = merged_layer else {
-        unreachable!("config override layers always have a table root");
+    let mut merged = cli_overrides.to_vec();
+    for (request_key, request_value) in request_overrides {
+        let preserved_env = preserved_process_mcp_env_overrides(
+            cli_overrides,
+            &request_key,
+            &request_value,
+        );
+        merged.push((request_key, request_value));
+        merged.extend(preserved_env);
+    }
+    merged
+}
+
+fn preserved_process_mcp_env_overrides(
+    cli_overrides: &[(String, TomlValue)],
+    request_key: &str,
+    request_value: &TomlValue,
+) -> Vec<(String, TomlValue)> {
+    let mut segments = request_key.split('.');
+    if segments.next() != Some("mcp_servers") {
+        return Vec::new();
+    }
+    let Some(server_name) = segments.next() else {
+        return Vec::new();
     };
-    merged_table.into_iter().collect()
+    if server_name.is_empty() || segments.next().is_some() {
+        return Vec::new();
+    }
+    let TomlValue::Table(server) = request_value else {
+        return Vec::new();
+    };
+    if !server.contains_key("command") || server.contains_key("url") {
+        return Vec::new();
+    }
+
+    let request_env = match server.get("env") {
+        Some(TomlValue::Table(env)) => Some(env),
+        Some(_) => return Vec::new(),
+        None => None,
+    };
+    let prefix = format!("{request_key}.env.");
+    cli_overrides
+        .iter()
+        .filter_map(|(key, value)| {
+            let env_key = key.strip_prefix(&prefix)?;
+            if env_key.is_empty()
+                || env_key.contains('.')
+                || request_env.is_some_and(|env| env.contains_key(env_key))
+            {
+                return None;
+            }
+            Some((key.clone(), value.clone()))
+        })
+        .collect()
 }
 
 pub(crate) fn apply_runtime_feature_enablement(
