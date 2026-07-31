@@ -375,11 +375,8 @@ fn merge_session_overrides(
 
     let mut merged = cli_overrides.to_vec();
     for (request_key, request_value) in request_overrides {
-        let preserved_env = preserved_process_mcp_env_overrides(
-            cli_overrides,
-            &request_key,
-            &request_value,
-        );
+        let preserved_env =
+            preserved_process_mcp_env_overrides(cli_overrides, &request_key, &request_value);
         merged.push((request_key, request_value));
         merged.extend(preserved_env);
     }
@@ -413,19 +410,34 @@ fn preserved_process_mcp_env_overrides(
         Some(_) => return Vec::new(),
         None => None,
     };
-    let prefix = format!("{request_key}.env.");
-    cli_overrides
-        .iter()
-        .filter_map(|(key, value)| {
-            let env_key = key.strip_prefix(&prefix)?;
-            if env_key.is_empty()
-                || env_key.contains('.')
-                || request_env.is_some_and(|env| env.contains_key(env_key))
-            {
-                return None;
-            }
-            Some((key.clone(), value.clone()))
-        })
+
+    let server_key = format!("mcp_servers.{server_name}");
+    let env_table_key = format!("{server_key}.env");
+    let env_leaf_prefix = format!("{env_table_key}.");
+    let mut active_env_leaves = BTreeMap::new();
+    for (key, value) in cli_overrides {
+        if key == "mcp_servers" || key == &server_key || key == &env_table_key {
+            active_env_leaves.clear();
+            continue;
+        }
+        let Some(env_path) = key.strip_prefix(&env_leaf_prefix) else {
+            continue;
+        };
+        let mut env_path_segments = env_path.split('.');
+        let Some(env_key) = env_path_segments.next().filter(|key| !key.is_empty()) else {
+            continue;
+        };
+        if env_path_segments.next().is_some() {
+            active_env_leaves.remove(env_key);
+            continue;
+        }
+        active_env_leaves.insert(env_key.to_string(), (key.clone(), value.clone()));
+    }
+
+    active_env_leaves
+        .into_iter()
+        .filter(|(env_key, _)| !request_env.is_some_and(|env| env.contains_key(env_key)))
+        .map(|(_, override_entry)| override_entry)
         .collect()
 }
 

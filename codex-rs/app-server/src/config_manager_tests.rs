@@ -16,10 +16,7 @@ fn merged_session_layer(
     cli_overrides: Vec<(String, TomlValue)>,
     request_overrides: HashMap<String, serde_json::Value>,
 ) -> TomlValue {
-    build_cli_overrides_layer(&merge_session_overrides(
-        &cli_overrides,
-        request_overrides,
-    ))
+    build_cli_overrides_layer(&merge_session_overrides(&cli_overrides, request_overrides))
 }
 
 #[test]
@@ -60,6 +57,113 @@ args = ["node_repl.js"]
 HTTP_PROXY = "http://proxy.example:2407"
 NODE_USE_ENV_PROXY = "1"
 NODE_REPL_NODE_PATH = "/opt/node"
+"#,
+    )
+    .expect("expected config should be valid TOML");
+
+    assert_eq!(merged, expected);
+}
+
+#[test]
+fn overwritten_process_env_leaf_is_not_replayed() {
+    let cli_overrides = vec![
+        (
+            "mcp_servers.node_repl.env.HTTP_PROXY".to_string(),
+            TomlValue::String("http://obsolete-proxy.example:2407".to_string()),
+        ),
+        (
+            "mcp_servers.node_repl".to_string(),
+            toml::from_str(
+                r#"
+command = "node"
+args = ["process.js"]
+"#,
+            )
+            .expect("process CLI table should be valid TOML"),
+        ),
+    ];
+    let request_overrides = HashMap::from([(
+        "mcp_servers.node_repl".to_string(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["request.js"]
+        }),
+    )]);
+
+    let merged = merged_session_layer(cli_overrides, request_overrides);
+    let expected: TomlValue = toml::from_str(
+        r#"
+[mcp_servers.node_repl]
+command = "node"
+args = ["request.js"]
+"#,
+    )
+    .expect("expected config should be valid TOML");
+
+    assert_eq!(merged, expected);
+}
+
+#[test]
+fn process_server_table_env_is_not_replayed() {
+    let cli_overrides = vec![(
+        "mcp_servers.node_repl".to_string(),
+        toml::from_str(
+            r#"
+command = "node"
+args = ["process.js"]
+
+[env]
+HTTP_PROXY = "http://process-table-proxy.example:2407"
+"#,
+        )
+        .expect("process CLI server table should be valid TOML"),
+    )];
+    let request_overrides = HashMap::from([(
+        "mcp_servers.node_repl".to_string(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["request.js"]
+        }),
+    )]);
+
+    let merged = merged_session_layer(cli_overrides, request_overrides);
+    let expected: TomlValue = toml::from_str(
+        r#"
+[mcp_servers.node_repl]
+command = "node"
+args = ["request.js"]
+"#,
+    )
+    .expect("expected config should be valid TOML");
+
+    assert_eq!(merged, expected);
+}
+
+#[test]
+fn process_env_table_is_not_replayed() {
+    let cli_overrides = vec![(
+        "mcp_servers.node_repl.env".to_string(),
+        toml::from_str(
+            r#"
+HTTP_PROXY = "http://process-env-table-proxy.example:2407"
+"#,
+        )
+        .expect("process CLI env table should be valid TOML"),
+    )];
+    let request_overrides = HashMap::from([(
+        "mcp_servers.node_repl".to_string(),
+        serde_json::json!({
+            "command": "node",
+            "args": ["request.js"]
+        }),
+    )]);
+
+    let merged = merged_session_layer(cli_overrides, request_overrides);
+    let expected: TomlValue = toml::from_str(
+        r#"
+[mcp_servers.node_repl]
+command = "node"
+args = ["request.js"]
 "#,
     )
     .expect("expected config should be valid TOML");

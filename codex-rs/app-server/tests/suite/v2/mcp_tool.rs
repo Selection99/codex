@@ -234,7 +234,10 @@ async fn thread_config_table_preserves_process_cli_mcp_env() -> Result<()> {
         .await?;
 
     assert_eq!(
-        (response.structured_content, node_proxy_response.structured_content),
+        (
+            response.structured_content,
+            node_proxy_response.structured_content
+        ),
         (
             Some(json!({
                 "echo": "ECHOING: proxy check",
