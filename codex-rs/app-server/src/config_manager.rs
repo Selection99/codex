@@ -235,15 +235,7 @@ impl ConfigManager {
                 )
             })?);
         }
-        let merged_cli_overrides = cli_overrides
-            .iter()
-            .cloned()
-            .chain(
-                request_overrides
-                    .into_iter()
-                    .map(|(key, value)| (key, json_to_toml(value))),
-            )
-            .collect::<Vec<_>>();
+        let merged_cli_overrides = merge_session_overrides(cli_overrides, request_overrides);
 
         let mut config = codex_core::config::ConfigBuilder::default()
             .codex_home(self.codex_home.clone())
@@ -353,6 +345,102 @@ pub(crate) fn protected_feature_keys(config_layer_stack: &ConfigLayerStack) -> B
     protected_features
 }
 
+/// Compose process CLI overrides with per-request config overrides into one
+/// session layer.
+///
+/// Request overrides retain the existing whole-value replacement semantics.
+/// The one compatibility exception is a full stdio MCP server table: explicit
+/// process CLI leaves under that server's `env` table are replayed when the
+/// request did not provide the same environment key. Desktop sends a complete
+/// `mcp_servers.node_repl` table, while the launcher injects proxy environment
+/// leaves through process CLI flags.
+///
+/// Request ancestors are applied before descendants so a more-specific
+/// request key deterministically wins instead of depending on `HashMap`
+/// iteration order.
+fn merge_session_overrides(
+    cli_overrides: &[(String, TomlValue)],
+    request_overrides: HashMap<String, serde_json::Value>,
+) -> Vec<(String, TomlValue)> {
+    let mut request_overrides = request_overrides
+        .into_iter()
+        .map(|(key, value)| (key, json_to_toml(value)))
+        .collect::<Vec<_>>();
+    request_overrides.sort_by(|(left, _), (right, _)| {
+        left.split('.')
+            .count()
+            .cmp(&right.split('.').count())
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut merged = cli_overrides.to_vec();
+    for (request_key, request_value) in request_overrides {
+        let preserved_env =
+            preserved_process_mcp_env_overrides(cli_overrides, &request_key, &request_value);
+        merged.push((request_key, request_value));
+        merged.extend(preserved_env);
+    }
+    merged
+}
+
+fn preserved_process_mcp_env_overrides(
+    cli_overrides: &[(String, TomlValue)],
+    request_key: &str,
+    request_value: &TomlValue,
+) -> Vec<(String, TomlValue)> {
+    let mut segments = request_key.split('.');
+    if segments.next() != Some("mcp_servers") {
+        return Vec::new();
+    }
+    let Some(server_name) = segments.next() else {
+        return Vec::new();
+    };
+    if server_name.is_empty() || segments.next().is_some() {
+        return Vec::new();
+    }
+    let TomlValue::Table(server) = request_value else {
+        return Vec::new();
+    };
+    if !server.contains_key("command") || server.contains_key("url") {
+        return Vec::new();
+    }
+
+    let request_env = match server.get("env") {
+        Some(TomlValue::Table(env)) => Some(env),
+        Some(_) => return Vec::new(),
+        None => None,
+    };
+
+    let server_key = format!("mcp_servers.{server_name}");
+    let env_table_key = format!("{server_key}.env");
+    let env_leaf_prefix = format!("{env_table_key}.");
+    let mut active_env_leaves = BTreeMap::new();
+    for (key, value) in cli_overrides {
+        if key == "mcp_servers" || key == &server_key || key == &env_table_key {
+            active_env_leaves.clear();
+            continue;
+        }
+        let Some(env_path) = key.strip_prefix(&env_leaf_prefix) else {
+            continue;
+        };
+        let mut env_path_segments = env_path.split('.');
+        let Some(env_key) = env_path_segments.next().filter(|key| !key.is_empty()) else {
+            continue;
+        };
+        if env_path_segments.next().is_some() {
+            active_env_leaves.remove(env_key);
+            continue;
+        }
+        active_env_leaves.insert(env_key.to_string(), (key.clone(), value.clone()));
+    }
+
+    active_env_leaves
+        .into_iter()
+        .filter(|(env_key, _)| !request_env.is_some_and(|env| env.contains_key(env_key)))
+        .map(|(_, override_entry)| override_entry)
+        .collect()
+}
+
 pub(crate) fn apply_runtime_feature_enablement(
     config: &mut Config,
     runtime_feature_enablement: &BTreeMap<String, bool>,
@@ -374,3 +462,7 @@ pub(crate) fn apply_runtime_feature_enablement(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "config_manager_tests.rs"]
+mod tests;
